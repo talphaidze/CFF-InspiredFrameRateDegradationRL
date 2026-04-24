@@ -6,9 +6,19 @@ env with StroboscopicWrapper / STOP_AND_LOOK action.
 """
 from __future__ import annotations
 
-import gymnasium as gym
-import miniworld  # noqa: F401 — registers MiniWorld envs on import
-from miniworld.miniworld import MiniWorldEnv
+import os
+
+# Enable pyglet's EGL-based headless mode before importing miniworld.
+# MiniWorld uses pyglet 1.5 which otherwise tries to open an X display,
+# which Izar compute nodes do not have. Must run before `import miniworld`.
+os.environ.setdefault("PYGLET_HEADLESS", "true")
+import pyglet  # noqa: E402
+
+pyglet.options["headless"] = True
+
+import gymnasium as gym  # noqa: E402
+import miniworld  # noqa: F401, E402 — registers MiniWorld envs on import
+from miniworld.miniworld import MiniWorldEnv  # noqa: E402
 
 from cff_rl.envs.wrappers import (
     ActionFilterWrapper,

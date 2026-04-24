@@ -13,19 +13,25 @@
 # Batch-submit Agent A (35 Hz baseline) PPO training on SCITAS (Izar).
 #
 # Usage (from repo root):
-#   sbatch submit_job.sh <wandb_api_key> [config_file]
+#   sbatch submit_job.sh [config_file] [wandb_api_key]
 #
-# Example:
-#   sbatch submit_job.sh "$WANDB_API_KEY" configs/agent_a_static.yaml
+# Examples:
+#   sbatch submit_job.sh                                                # TensorBoard only
+#   sbatch submit_job.sh configs/agent_a_static.yaml                    # TensorBoard only
+#   sbatch submit_job.sh configs/agent_a_static.yaml "$WANDB_API_KEY"   # wandb + TensorBoard
 
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-.}"
 
-WANDB_KEY="${1:?Usage: sbatch submit_job.sh <wandb_api_key> [config_file]}"
-CONFIG="${2:-configs/agent_a_static.yaml}"
+CONFIG="${1:-configs/agent_a_static.yaml}"
+WANDB_KEY="${2:-}"
 
 export PYTHONUNBUFFERED=1
-export WANDB_API_KEY="$WANDB_KEY"
+TRACK_FLAG=""
+if [[ -n "$WANDB_KEY" ]]; then
+  export WANDB_API_KEY="$WANDB_KEY"
+  TRACK_FLAG="--track"
+fi
 # MiniWorld uses pyglet; on headless nodes it falls back to EGL/OSMesa.
 # PyOpenGL / pyglet will pick a headless path automatically; no DISPLAY needed.
 
@@ -45,4 +51,8 @@ echo "HOSTNAME=$(hostname)"
 echo "CONFIG=$CONFIG"
 nvidia-smi || true
 
-python scripts/train.py --config "$CONFIG" --track
+# MiniWorld uses pyglet; on Izar compute nodes (no X display, no Xvfb binary)
+# we rely on pyglet's native EGL-based headless mode. The env var is
+# redundant with the in-code setting in static_maze.py but harmless.
+export PYGLET_HEADLESS=true
+python scripts/train.py --config "$CONFIG" $TRACK_FLAG
