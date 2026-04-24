@@ -1,0 +1,24 @@
+# Agent A (35 Hz baseline) — Regime 1 static MiniWorld
+exp_name: agent_a_static
+seed: 42
+
+env_id: MiniWorld-OneRoom-v0
+
+total_timesteps: 1000000
+num_envs: 8
+num_steps: 128
+learning_rate: 2.5e-4
+anneal_lr: true
+gamma: 0.99
+gae_lambda: 0.95
+num_minibatches: 4
+update_epochs: 4
+clip_coef: 0.1
+ent_coef: 0.01
+vf_coef: 0.5
+max_grad_norm: 0.5
+
+track: false
+wandb_project: cff-rl
+log_dir: runs
+checkpoint_every: 50

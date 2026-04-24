@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Environments
+.venv/
+venv/
+.env
+
+# uv
+.uv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+
+# Project
+runs/
+wandb/
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+nanovlm_train_*.out
+nanovlm_train_*.err
+cff_*_*.out
+cff_*_*.err
+
+# Logs
+*.log
+tensorboard/
