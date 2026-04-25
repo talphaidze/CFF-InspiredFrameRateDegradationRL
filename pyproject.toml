@@ -1,0 +1,37 @@
+[project]
+name = "cff-rl"
+version = "0.1.0"
+description = "Critical Flicker Fusion-Inspired Frame Rate Degradation in RL (EPFL CS-503)"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+authors = [
+    { name = "Tamar Alphaidze" },
+    { name = "Sajal Chaurasia" },
+    { name = "Manuel Curnis" },
+    { name = "Alessandro Di Maria" },
+]
+dependencies = [
+    "torch>=2.3",
+    "torchvision>=0.18",
+    "gymnasium>=1.0",
+    "miniworld>=2.0",
+    "numpy>=1.26,<2.2",
+    "opencv-python-headless>=4.9",
+    "pyyaml>=6.0",
+    "tqdm>=4.66",
+    "tyro>=0.8",
+    "wandb>=0.17",
+    "tensorboard>=2.16",
+    "pyglet<2.0",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.uv]
+# Note: on Izar we install torch via the CUDA 12.1 index inside setup_env_izar.sh.
+# Locally, `uv sync` gets the default CPU/CUDA wheel for your platform.
