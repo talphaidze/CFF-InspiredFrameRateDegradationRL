@@ -15,11 +15,13 @@ import argparse
 import json
 from pathlib import Path
 
+import gymnasium as gym
 import numpy as np
 import torch
 
 from cff_rl.agents.ppo import NatureCNN, _count_reversals
 from cff_rl.envs.static_maze import make_static_env
+from cff_rl.envs.wrappers import VideoCompositeWrapper
 
 
 def parse_args() -> argparse.Namespace:
@@ -36,6 +38,17 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--seed", type=int, default=1000)
     p.add_argument("--deterministic", action="store_true")
+    p.add_argument(
+        "--record-video",
+        action="store_true",
+        help="Record videos of eval episodes (uses first seed only).",
+    )
+    p.add_argument(
+        "--video-dir",
+        type=Path,
+        default=None,
+        help="Where to write videos. Defaults to <checkpoint_dir>/eval_videos.",
+    )
     return p.parse_args()
 
 
@@ -46,8 +59,21 @@ def run_seed(
     seed: int,
     episodes: int,
     deterministic: bool,
+    video_dir: Path | None = None,
 ) -> dict:
-    env = make_static_env(env_id=env_id, seed=seed)
+    if video_dir is not None:
+        env = make_static_env(env_id=env_id, seed=seed, render_mode="rgb_array")
+        env = VideoCompositeWrapper(env, render_fps=4)
+        video_dir.mkdir(parents=True, exist_ok=True)
+        env = gym.wrappers.RecordVideo(
+            env,
+            video_folder=str(video_dir),
+            episode_trigger=lambda ep: True,
+            disable_logger=True,
+            name_prefix=f"eval-seed{seed}",
+        )
+    else:
+        env = make_static_env(env_id=env_id, seed=seed)
     successes, returns, lengths, reversals = [], [], [], []
     for ep in range(episodes):
         obs, _ = env.reset(seed=seed + ep)
@@ -96,9 +122,21 @@ def main() -> None:
     agent.load_state_dict(ckpt["agent"])
     agent.eval()
 
+    video_dir = None
+    if args.record_video:
+        video_dir = args.video_dir or (args.checkpoint.parent / "eval_videos")
+
     per_seed = [
-        run_seed(agent, device, args.env_id, s, args.episodes, args.deterministic)
-        for s in seeds
+        run_seed(
+            agent,
+            device,
+            args.env_id,
+            s,
+            args.episodes,
+            args.deterministic,
+            video_dir=video_dir if i == 0 else None,
+        )
+        for i, s in enumerate(seeds)
     ]
 
     def agg(key: str) -> tuple[float, float]:
