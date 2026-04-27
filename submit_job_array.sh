@@ -37,7 +37,9 @@ if [[ -n "$WANDB_KEY" ]]; then
 fi
 
 # shellcheck disable=SC1091
-if [[ -f "${HOME}/miniforge3/etc/profile.d/conda.sh" ]]; then
+if [[ -f "${SCRATCH}/miniforge3/etc/profile.d/conda.sh" ]]; then
+  source "${SCRATCH}/miniforge3/etc/profile.d/conda.sh"
+elif [[ -f "${HOME}/miniforge3/etc/profile.d/conda.sh" ]]; then
   source "${HOME}/miniforge3/etc/profile.d/conda.sh"
 elif [[ -f "${HOME}/miniconda3/etc/profile.d/conda.sh" ]]; then
   source "${HOME}/miniconda3/etc/profile.d/conda.sh"

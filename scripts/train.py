@@ -55,8 +55,13 @@ def main() -> None:
     every = max(1, cfg.video_every)
 
     def env_fn(seed: int, env_idx: int = 0):
+        use_stroboscopic = cfg.exp_name.startswith("agent_b")
         if cfg.record_video and env_idx == 0:
-            env = make_static_env(env_id=env_id, seed=seed, render_mode="rgb_array")
+            env = make_static_env(env_id=env_id, 
+                                  seed=seed, 
+                                  render_mode="rgb_array",
+                                  use_stroboscopic=use_stroboscopic,
+                                  strobe_k=7,)
             env = VideoCompositeWrapper(env, render_fps=4)
             video_dir.mkdir(parents=True, exist_ok=True)
             env = gym.wrappers.RecordVideo(
@@ -66,7 +71,10 @@ def main() -> None:
                 disable_logger=True,
             )
             return env
-        return make_static_env(env_id=env_id, seed=seed)
+        return make_static_env(env_id=env_id, 
+                               seed=seed,
+                               use_stroboscopic=use_stroboscopic,
+                               strobe_k=7)
 
     # Inject the pre-computed run_name so the PPO trainer uses the same dir as
     # the videos written above. PPOConfig has no run_name field; instead we

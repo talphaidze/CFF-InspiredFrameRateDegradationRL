@@ -54,6 +54,29 @@ class FrameStack4Wrapper(gym.ObservationWrapper):
     def _stack(self) -> np.ndarray:
         return np.stack(self._frames, axis=0)
 
+class StroboscopicWrapper(gym.ObservationWrapper):
+    """Repeat each grayscale frame for k steps before refreshing it."""
+
+    def __init__(self, env: gym.Env, k: int = 7):
+        super().__init__(env)
+        self.k = int(k)
+        self._hold_counter = 0
+        self._last_obs: np.ndarray | None = None
+        self.observation_space = env.observation_space
+
+    def reset(self, *, seed=None, options=None):
+        obs, info = self.env.reset(seed=seed, options=options)
+        self._last_obs = obs.copy()
+        self._hold_counter = self.k - 1
+        return self._last_obs, info
+
+    def observation(self, obs: np.ndarray) -> np.ndarray:
+        if self._hold_counter == 0:
+            self._last_obs = obs.copy()
+            self._hold_counter = self.k - 1
+        else:
+            self._hold_counter -= 1
+        return self._last_obs
 
 class VideoCompositeWrapper(gym.Wrapper):
     """Override env.render() with a high-res top-down + first-person composite,

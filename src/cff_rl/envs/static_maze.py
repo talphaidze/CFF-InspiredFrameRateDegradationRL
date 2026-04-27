@@ -29,6 +29,7 @@ from cff_rl.envs.wrappers import (
     ActionFilterWrapper,
     FrameStack4Wrapper,
     Grayscale64Wrapper,
+    StroboscopicWrapper,
 )
 
 # MiniWorld default action indices we care about for the static task.
@@ -43,7 +44,7 @@ TURN_STEP_DEG = 90
 FORWARD_STEP = 0.5
 
 OBS_SIZE = 64
-FRAME_STACK = 4
+FRAME_STACK = 8
 MAX_EPISODE_STEPS = 500
 
 
@@ -51,6 +52,8 @@ def make_static_env(
     env_id: str = "MiniWorld-FourRooms-v0",
     seed: int | None = None,
     render_mode: str | None = None,
+    use_stroboscopic: bool = False,
+    strobe_k: int = 7,
 ) -> gym.Env:
     """Build the Regime 1 environment for Agent A (35 Hz baseline)."""
     extra: dict = {}
@@ -74,6 +77,8 @@ def make_static_env(
 
     env = ActionFilterWrapper(env, STATIC_ACTIONS)
     env = Grayscale64Wrapper(env, size=OBS_SIZE)
+    if use_stroboscopic:
+        env = StroboscopicWrapper(env, k=strobe_k)
     env = FrameStack4Wrapper(env, k=FRAME_STACK)
 
     if seed is not None:
