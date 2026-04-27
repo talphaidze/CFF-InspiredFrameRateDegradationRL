@@ -15,6 +15,7 @@ import yaml
 
 from cff_rl.agents.ppo import PPOConfig, train as ppo_train
 from cff_rl.envs.static_maze import make_static_env
+from cff_rl.envs.wrappers import VideoCompositeWrapper
 
 
 def parse_args() -> argparse.Namespace:
@@ -56,6 +57,7 @@ def main() -> None:
     def env_fn(seed: int, env_idx: int = 0):
         if cfg.record_video and env_idx == 0:
             env = make_static_env(env_id=env_id, seed=seed, render_mode="rgb_array")
+            env = VideoCompositeWrapper(env, render_fps=4)
             video_dir.mkdir(parents=True, exist_ok=True)
             env = gym.wrappers.RecordVideo(
                 env,

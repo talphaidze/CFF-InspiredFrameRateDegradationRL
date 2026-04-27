@@ -53,12 +53,18 @@ def make_static_env(
     render_mode: str | None = None,
 ) -> gym.Env:
     """Build the Regime 1 environment for Agent A (35 Hz baseline)."""
+    extra: dict = {}
+    if render_mode == "rgb_array":
+        # Bigger framebuffer so the recorded video isn't tiny. Doesn't affect
+        # the policy obs (still OBS_SIZE x OBS_SIZE, set via obs_width/height).
+        extra.update(window_width=512, window_height=512)
     env = gym.make(
         env_id,
         obs_width=OBS_SIZE,
         obs_height=OBS_SIZE,
         max_episode_steps=MAX_EPISODE_STEPS,
         render_mode=render_mode,
+        **extra,
     )
     # Override motion params on the unwrapped MiniWorldEnv so turns are 90°
     # and forward velocity is constant. `params.set(name, default, min, max)`.
