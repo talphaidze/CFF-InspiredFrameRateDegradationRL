@@ -7,14 +7,19 @@ env with StroboscopicWrapper / STOP_AND_LOOK action.
 from __future__ import annotations
 
 import os
+import sys
 
-# Enable pyglet's EGL-based headless mode before importing miniworld.
-# MiniWorld uses pyglet 1.5 which otherwise tries to open an X display,
-# which Izar compute nodes do not have. Must run before `import miniworld`.
-os.environ.setdefault("PYGLET_HEADLESS", "true")
+# Enable pyglet's EGL-based headless mode before importing miniworld on Linux
+# (Izar compute nodes have no X display). On macOS / Windows, pyglet's EGL
+# backend isn't available — fall back to the platform's native windowing.
+# Must run before `import miniworld`.
+_HEADLESS = sys.platform.startswith("linux")
+if _HEADLESS:
+    os.environ.setdefault("PYGLET_HEADLESS", "true")
 import pyglet  # noqa: E402
 
-pyglet.options["headless"] = True
+if _HEADLESS:
+    pyglet.options["headless"] = True
 
 import gymnasium as gym  # noqa: E402
 import miniworld  # noqa: F401, E402 — registers MiniWorld envs on import
@@ -43,7 +48,7 @@ MAX_EPISODE_STEPS = 500
 
 
 def make_static_env(
-    env_id: str = "MiniWorld-OneRoom-v0",
+    env_id: str = "MiniWorld-FourRooms-v0",
     seed: int | None = None,
     render_mode: str | None = None,
 ) -> gym.Env:
@@ -71,14 +76,20 @@ def make_static_env(
 
 
 if __name__ == "__main__":
-    # Smoke test: random policy for 100 steps, verify obs shape.
+    # Smoke test: random policy across a few episodes, verify obs shape.
     env = make_static_env(seed=0)
     obs, _ = env.reset(seed=0)
     assert obs.shape == (FRAME_STACK, OBS_SIZE, OBS_SIZE), obs.shape
-    for _ in range(100):
+    episodes = successes = 0
+    for _ in range(2000):
         a = env.action_space.sample()
         obs, r, terminated, truncated, _ = env.step(a)
         if terminated or truncated:
+            episodes += 1
+            successes += int(terminated)
             obs, _ = env.reset()
-    print(f"OK — obs shape {obs.shape}, action space {env.action_space}")
+    print(
+        f"OK — env={env.spec.id if env.spec else '?'} obs {obs.shape} "
+        f"actions={env.action_space} episodes={episodes} random_success={successes}"
+    )
     env.close()

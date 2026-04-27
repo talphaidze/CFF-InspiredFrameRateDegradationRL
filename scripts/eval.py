@@ -1,15 +1,18 @@
 """Rollout a trained checkpoint and report Regime 1 metrics.
 
 Primary metric (proposal § Method, Regime 1): steps to 90% success rate
-across 100 episodes. This script reports success rate, mean return, mean
-episode length, and mean direction-reversal count for a given checkpoint.
+across N episodes. This script reports success rate, mean return, mean
+episode length, and mean direction-reversal count for a given checkpoint,
+aggregated across one or more seeds.
 
 Usage:
-    python scripts/eval.py --checkpoint runs/<run>/ckpt_000050.pt --episodes 100
+    python scripts/eval.py --checkpoint runs/<run>/ckpt_000050.pt --episodes 50
+    python scripts/eval.py --checkpoint runs/<run>/ckpt_000050.pt --seeds 1 2 3 4 5 --episodes 50
 """
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import numpy as np
@@ -22,35 +25,38 @@ from cff_rl.envs.static_maze import make_static_env
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--checkpoint", type=Path, required=True)
-    p.add_argument("--env-id", type=str, default="MiniWorld-OneRoom-v0")
+    p.add_argument("--env-id", type=str, default="MiniWorld-FourRooms-v0")
     p.add_argument("--episodes", type=int, default=100)
+    p.add_argument(
+        "--seeds",
+        type=int,
+        nargs="+",
+        default=None,
+        help="One or more eval seeds. Defaults to [--seed].",
+    )
     p.add_argument("--seed", type=int, default=1000)
     p.add_argument("--deterministic", action="store_true")
     return p.parse_args()
 
 
-def main() -> None:
-    args = parse_args()
-    ckpt = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    env = make_static_env(env_id=args.env_id, seed=args.seed)
-    obs_shape = env.observation_space.shape
-    n_actions = int(env.action_space.n)
-
-    agent = NatureCNN(in_channels=obs_shape[0], n_actions=n_actions).to(device)
-    agent.load_state_dict(ckpt["agent"])
-    agent.eval()
-
+def run_seed(
+    agent: NatureCNN,
+    device: torch.device,
+    env_id: str,
+    seed: int,
+    episodes: int,
+    deterministic: bool,
+) -> dict:
+    env = make_static_env(env_id=env_id, seed=seed)
     successes, returns, lengths, reversals = [], [], [], []
-    for ep in range(args.episodes):
-        obs, _ = env.reset(seed=args.seed + ep)
+    for ep in range(episodes):
+        obs, _ = env.reset(seed=seed + ep)
         ep_ret, ep_len, ep_acts = 0.0, 0, []
         terminated = truncated = False
         while not (terminated or truncated):
             x = torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0).to(device)
             with torch.no_grad():
-                if args.deterministic:
+                if deterministic:
                     h = agent.encode(x)
                     action = int(agent.actor(h).argmax(dim=-1).item())
                 else:
@@ -64,13 +70,65 @@ def main() -> None:
         returns.append(ep_ret)
         lengths.append(ep_len)
         reversals.append(_count_reversals(ep_acts))
-
     env.close()
-    print(f"episodes: {args.episodes}")
-    print(f"success_rate: {np.mean(successes):.3f}")
-    print(f"mean_return:  {np.mean(returns):.3f}")
-    print(f"mean_length:  {np.mean(lengths):.1f}")
-    print(f"mean_reversals: {np.mean(reversals):.2f}")
+    return {
+        "seed": seed,
+        "episodes": episodes,
+        "success_rate": float(np.mean(successes)),
+        "mean_return": float(np.mean(returns)),
+        "mean_length": float(np.mean(lengths)),
+        "mean_reversals": float(np.mean(reversals)),
+    }
+
+
+def main() -> None:
+    args = parse_args()
+    seeds = args.seeds if args.seeds is not None else [args.seed]
+    ckpt = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    probe = make_static_env(env_id=args.env_id, seed=seeds[0])
+    obs_shape = probe.observation_space.shape
+    n_actions = int(probe.action_space.n)
+    probe.close()
+
+    agent = NatureCNN(in_channels=obs_shape[0], n_actions=n_actions).to(device)
+    agent.load_state_dict(ckpt["agent"])
+    agent.eval()
+
+    per_seed = [
+        run_seed(agent, device, args.env_id, s, args.episodes, args.deterministic)
+        for s in seeds
+    ]
+
+    def agg(key: str) -> tuple[float, float]:
+        vals = np.array([r[key] for r in per_seed], dtype=np.float64)
+        return float(vals.mean()), float(vals.std(ddof=0))
+
+    summary = {
+        "checkpoint": str(args.checkpoint),
+        "env_id": args.env_id,
+        "seeds": seeds,
+        "episodes_per_seed": args.episodes,
+        "deterministic": args.deterministic,
+        "per_seed": per_seed,
+        "success_rate": agg("success_rate"),
+        "mean_return": agg("mean_return"),
+        "mean_length": agg("mean_length"),
+        "mean_reversals": agg("mean_reversals"),
+    }
+
+    out = args.checkpoint.parent / "eval_results.json"
+    with open(out, "w") as f:
+        json.dump(summary, f, indent=2)
+
+    print(f"checkpoint: {args.checkpoint}")
+    print(f"seeds: {seeds}  episodes/seed: {args.episodes}")
+    print(f"{'metric':<16} {'mean':>10} {'std':>10}")
+    for k in ("success_rate", "mean_return", "mean_length", "mean_reversals"):
+        m, s = summary[k]
+        print(f"{k:<16} {m:>10.3f} {s:>10.3f}")
+    print(f"wrote {out}")
 
 
 if __name__ == "__main__":

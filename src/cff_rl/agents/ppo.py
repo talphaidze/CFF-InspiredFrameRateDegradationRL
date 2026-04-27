@@ -53,6 +53,9 @@ class PPOConfig:
     log_dir: str = "runs"
     checkpoint_every: int = 50  # updates
 
+    record_video: bool = False
+    video_every: int = 50  # episodes (env 0 only)
+
     # Derived at runtime
     batch_size: int = field(init=False, default=0)
     minibatch_size: int = field(init=False, default=0)
@@ -129,11 +132,15 @@ def _count_reversals(actions: list[int], left: int = 0, right: int = 1) -> int:
 
 def train(
     cfg: PPOConfig,
-    env_fn: Callable[[int], gym.Env],
+    env_fn: Callable[..., gym.Env],
 ) -> None:
+    """Train PPO. env_fn is called as env_fn(seed, env_idx) when it accepts
+    two args, else env_fn(seed) for backwards compatibility."""
     cfg.finalize()
 
-    run_name = f"{cfg.exp_name}__{cfg.seed}__{int(time.time())}"
+    run_name = os.environ.get(
+        "CFF_RUN_NAME", f"{cfg.exp_name}__{cfg.seed}__{int(time.time())}"
+    )
     run_dir = Path(cfg.log_dir) / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -164,8 +171,17 @@ def train(
         "cuda" if cfg.cuda and torch.cuda.is_available() else "cpu"
     )
 
+    import inspect
+
+    _env_fn_arity = len(inspect.signature(env_fn).parameters)
+
+    def _make(i: int):
+        if _env_fn_arity >= 2:
+            return env_fn(cfg.seed + i, i)
+        return env_fn(cfg.seed + i)
+
     envs = gym.vector.SyncVectorEnv(
-        [lambda i=i: env_fn(cfg.seed + i) for i in range(cfg.num_envs)]
+        [lambda i=i: _make(i) for i in range(cfg.num_envs)]
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete)
     obs_shape = envs.single_observation_space.shape  # (C, H, W)
