@@ -54,6 +54,7 @@ def make_static_env(
     render_mode: str | None = None,
     use_stroboscopic: bool = False,
     strobe_k: int = 7,
+    frame_stack: int = FRAME_STACK,
 ) -> gym.Env:
     """Build the Regime 1 environment for Agent A (35 Hz baseline)."""
     extra: dict = {}
@@ -79,7 +80,7 @@ def make_static_env(
     env = Grayscale64Wrapper(env, size=OBS_SIZE)
     if use_stroboscopic:
         env = StroboscopicWrapper(env, k=strobe_k)
-    env = FrameStack4Wrapper(env, k=FRAME_STACK)
+    env = FrameStack4Wrapper(env, k=frame_stack)
 
     if seed is not None:
         env.reset(seed=seed)

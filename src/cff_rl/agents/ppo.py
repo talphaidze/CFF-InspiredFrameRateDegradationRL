@@ -56,15 +56,25 @@ class PPOConfig:
     record_video: bool = False
     video_every: int = 50  # episodes (env 0 only)
 
+    # Architecture
+    frame_stack: int = 4
+    lstm_hidden_size: int = 256
+    lstm_num_layers: int = 1
+
     # Derived at runtime
     batch_size: int = field(init=False, default=0)
     minibatch_size: int = field(init=False, default=0)
     num_iterations: int = field(init=False, default=0)
+    envs_per_minibatch: int = field(init=False, default=0)
 
     def finalize(self) -> None:
         self.batch_size = self.num_envs * self.num_steps
         self.minibatch_size = self.batch_size // self.num_minibatches
         self.num_iterations = self.total_timesteps // self.batch_size
+        assert (
+            self.num_envs % self.num_minibatches == 0
+        ), "num_envs must be divisible by num_minibatches for recurrent PPO"
+        self.envs_per_minibatch = self.num_envs // self.num_minibatches
 
 
 def layer_init(layer: nn.Module, std: float = np.sqrt(2), bias_const: float = 0.0):
@@ -74,9 +84,21 @@ def layer_init(layer: nn.Module, std: float = np.sqrt(2), bias_const: float = 0.
 
 
 class NatureCNN(nn.Module):
-    """CNN encoder over a (C, 64, 64) uint8 image stack."""
+    """CNN + LSTM recurrent agent over a (C, 64, 64) uint8 image stack.
 
-    def __init__(self, in_channels: int, n_actions: int):
+    The CNN+FC encoder maps each observation to a 512-d feature, an LSTM
+    integrates these features over time with per-env hidden state that is
+    zeroed on episode boundaries, and shared actor/critic heads read the
+    LSTM output. Class name kept for checkpoint/import compatibility.
+    """
+
+    def __init__(
+        self,
+        in_channels: int,
+        n_actions: int,
+        lstm_hidden_size: int = 256,
+        lstm_num_layers: int = 1,
+    ):
         super().__init__()
         self.network = nn.Sequential(
             layer_init(nn.Conv2d(in_channels, 32, 8, stride=4)),
@@ -94,24 +116,82 @@ class NatureCNN(nn.Module):
             layer_init(nn.Linear(feat_dim, 512)),
             nn.ReLU(),
         )
-        self.actor = layer_init(nn.Linear(512, n_actions), std=0.01)
-        self.critic = layer_init(nn.Linear(512, 1), std=1.0)
+        self.lstm_hidden_size = lstm_hidden_size
+        self.lstm_num_layers = lstm_num_layers
+        self.lstm = nn.LSTM(512, lstm_hidden_size, num_layers=lstm_num_layers)
+        for name, param in self.lstm.named_parameters():
+            if "bias" in name:
+                nn.init.constant_(param, 0.0)
+            elif "weight" in name:
+                nn.init.orthogonal_(param, 1.0)
+        self.actor = layer_init(nn.Linear(lstm_hidden_size, n_actions), std=0.01)
+        self.critic = layer_init(nn.Linear(lstm_hidden_size, 1), std=1.0)
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
         return self.fc(self.network(x / 255.0))
 
-    def get_value(self, x: torch.Tensor) -> torch.Tensor:
-        return self.critic(self.encode(x))
+    def initial_state(
+        self, batch_size: int, device: torch.device
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        z = torch.zeros(
+            self.lstm_num_layers, batch_size, self.lstm_hidden_size, device=device
+        )
+        return (z, z.clone())
+
+    def get_states(
+        self,
+        x: torch.Tensor,
+        lstm_state: tuple[torch.Tensor, torch.Tensor],
+        done: torch.Tensor,
+    ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
+        """Run the LSTM step-by-step over a (T, N) chunk.
+
+        x: (T*N, C, H, W) — flattened in row-major (time-major) order.
+        lstm_state: ((L, N, H), (L, N, H)) hidden state at the start.
+        done: (T*N,) — 1.0 indicates obs[t] starts a new episode; the
+              hidden state is zeroed before consuming that step.
+        """
+        feats = self.encode(x)  # (T*N, 512)
+        n_envs = lstm_state[0].shape[1]
+        feats = feats.reshape((-1, n_envs, feats.shape[1]))  # (T, N, 512)
+        done = done.reshape((-1, n_envs))  # (T, N)
+        outputs: list[torch.Tensor] = []
+        for h_t, d_t in zip(feats, done):
+            mask = (1.0 - d_t).view(1, -1, 1)
+            lstm_state = (mask * lstm_state[0], mask * lstm_state[1])
+            out, lstm_state = self.lstm(h_t.unsqueeze(0), lstm_state)
+            outputs.append(out)
+        flat = torch.flatten(torch.cat(outputs), 0, 1)  # (T*N, hidden)
+        return flat, lstm_state
+
+    def get_value(
+        self,
+        x: torch.Tensor,
+        lstm_state: tuple[torch.Tensor, torch.Tensor],
+        done: torch.Tensor,
+    ) -> torch.Tensor:
+        h, _ = self.get_states(x, lstm_state, done)
+        return self.critic(h)
 
     def get_action_and_value(
-        self, x: torch.Tensor, action: torch.Tensor | None = None
+        self,
+        x: torch.Tensor,
+        lstm_state: tuple[torch.Tensor, torch.Tensor],
+        done: torch.Tensor,
+        action: torch.Tensor | None = None,
     ):
-        h = self.encode(x)
+        h, lstm_state = self.get_states(x, lstm_state, done)
         logits = self.actor(h)
         dist = Categorical(logits=logits)
         if action is None:
             action = dist.sample()
-        return action, dist.log_prob(action), dist.entropy(), self.critic(h)
+        return (
+            action,
+            dist.log_prob(action),
+            dist.entropy(),
+            self.critic(h),
+            lstm_state,
+        )
 
 
 def _count_reversals(actions: list[int], left: int = 0, right: int = 1) -> int:
@@ -187,7 +267,12 @@ def train(
     obs_shape = envs.single_observation_space.shape  # (C, H, W)
     n_actions = int(envs.single_action_space.n)
 
-    agent = NatureCNN(in_channels=obs_shape[0], n_actions=n_actions).to(device)
+    agent = NatureCNN(
+        in_channels=obs_shape[0],
+        n_actions=n_actions,
+        lstm_hidden_size=cfg.lstm_hidden_size,
+        lstm_num_layers=cfg.lstm_num_layers,
+    ).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=cfg.learning_rate, eps=1e-5)
 
     # Rollout buffers
@@ -208,8 +293,15 @@ def train(
     next_obs_np, _ = envs.reset(seed=cfg.seed)
     next_obs = torch.as_tensor(next_obs_np, dtype=torch.uint8).to(device)
     next_done = torch.zeros(cfg.num_envs).to(device)
+    next_lstm_state = agent.initial_state(cfg.num_envs, device)
 
     for iteration in range(1, cfg.num_iterations + 1):
+        # Snapshot LSTM state at the start of the rollout — needed to
+        # replay the same recurrent unroll during the PPO update.
+        initial_lstm_state = (
+            next_lstm_state[0].clone(),
+            next_lstm_state[1].clone(),
+        )
         if cfg.anneal_lr:
             frac = 1.0 - (iteration - 1.0) / cfg.num_iterations
             optimizer.param_groups[0]["lr"] = frac * cfg.learning_rate
@@ -220,8 +312,10 @@ def train(
             dones[step] = next_done
 
             with torch.no_grad():
-                action, logprob, _, value = agent.get_action_and_value(
-                    next_obs.float()
+                action, logprob, _, value, next_lstm_state = (
+                    agent.get_action_and_value(
+                        next_obs.float(), next_lstm_state, next_done
+                    )
                 )
                 values[step] = value.flatten()
             actions[step] = action
@@ -256,7 +350,9 @@ def train(
 
         # GAE
         with torch.no_grad():
-            next_value = agent.get_value(next_obs.float()).reshape(1, -1)
+            next_value = agent.get_value(
+                next_obs.float(), next_lstm_state, next_done
+            ).reshape(1, -1)
             advantages = torch.zeros_like(rewards).to(device)
             lastgaelam = 0
             for t in reversed(range(cfg.num_steps)):
@@ -276,25 +372,44 @@ def train(
                 )
             returns = advantages + values
 
-        b_obs = obs.reshape((-1,) + obs_shape)
-        b_logprobs = logprobs.reshape(-1)
-        b_actions = actions.reshape(-1)
-        b_advantages = advantages.reshape(-1)
-        b_returns = returns.reshape(-1)
-        b_values = values.reshape(-1)
-
-        b_inds = np.arange(cfg.batch_size)
+        # Recurrent PPO: do NOT flatten across (T, N) and shuffle — that
+        # would break BPTT. Instead keep the (T, N) layout and shuffle
+        # along the env axis only. Each minibatch is a contiguous slice
+        # of envs, unrolled for the full num_steps with its own initial
+        # LSTM state.
+        env_inds = np.arange(cfg.num_envs)
         clipfracs = []
         for _ in range(cfg.update_epochs):
-            np.random.shuffle(b_inds)
-            for start in range(0, cfg.batch_size, cfg.minibatch_size):
-                end = start + cfg.minibatch_size
-                mb_inds = b_inds[start:end]
+            np.random.shuffle(env_inds)
+            for start in range(0, cfg.num_envs, cfg.envs_per_minibatch):
+                mb_envs = env_inds[start : start + cfg.envs_per_minibatch]
+                mb_envs_t = torch.as_tensor(mb_envs, dtype=torch.long, device=device)
 
-                _, newlogprob, entropy, newvalue = agent.get_action_and_value(
-                    b_obs[mb_inds].float(), b_actions[mb_inds]
+                mb_obs = obs[:, mb_envs_t]  # (T, M, C, H, W)
+                mb_dones = dones[:, mb_envs_t]  # (T, M)
+                mb_logprobs_old = logprobs[:, mb_envs_t].reshape(-1)
+                mb_actions = actions[:, mb_envs_t].reshape(-1)
+                mb_advantages = advantages[:, mb_envs_t].reshape(-1)
+                mb_returns = returns[:, mb_envs_t].reshape(-1)
+                mb_values_old = values[:, mb_envs_t].reshape(-1)
+
+                mb_initial_state = (
+                    initial_lstm_state[0][:, mb_envs_t],
+                    initial_lstm_state[1][:, mb_envs_t],
                 )
-                logratio = newlogprob - b_logprobs[mb_inds]
+
+                flat_obs = mb_obs.reshape((-1,) + obs_shape).float()
+                flat_dones = mb_dones.reshape(-1)
+                _, newlogprob, entropy, newvalue, _ = agent.get_action_and_value(
+                    flat_obs, mb_initial_state, flat_dones, mb_actions
+                )
+
+                # Rebind names used by the loss code below.
+                b_logprobs_mb = mb_logprobs_old
+                b_advantages_mb = mb_advantages
+                b_returns_mb = mb_returns
+                b_values_mb = mb_values_old
+                logratio = newlogprob - b_logprobs_mb
                 ratio = logratio.exp()
 
                 with torch.no_grad():
@@ -303,30 +418,30 @@ def train(
                         ((ratio - 1.0).abs() > cfg.clip_coef).float().mean().item()
                     )
 
-                mb_advantages = b_advantages[mb_inds]
+                norm_advantages = b_advantages_mb
                 if cfg.norm_adv:
-                    mb_advantages = (mb_advantages - mb_advantages.mean()) / (
-                        mb_advantages.std() + 1e-8
+                    norm_advantages = (norm_advantages - norm_advantages.mean()) / (
+                        norm_advantages.std() + 1e-8
                     )
 
-                pg_loss1 = -mb_advantages * ratio
-                pg_loss2 = -mb_advantages * torch.clamp(
+                pg_loss1 = -norm_advantages * ratio
+                pg_loss2 = -norm_advantages * torch.clamp(
                     ratio, 1 - cfg.clip_coef, 1 + cfg.clip_coef
                 )
                 pg_loss = torch.max(pg_loss1, pg_loss2).mean()
 
                 newvalue = newvalue.view(-1)
                 if cfg.clip_vloss:
-                    v_loss_unclipped = (newvalue - b_returns[mb_inds]) ** 2
-                    v_clipped = b_values[mb_inds] + torch.clamp(
-                        newvalue - b_values[mb_inds],
+                    v_loss_unclipped = (newvalue - b_returns_mb) ** 2
+                    v_clipped = b_values_mb + torch.clamp(
+                        newvalue - b_values_mb,
                         -cfg.clip_coef,
                         cfg.clip_coef,
                     )
-                    v_loss_clipped = (v_clipped - b_returns[mb_inds]) ** 2
+                    v_loss_clipped = (v_clipped - b_returns_mb) ** 2
                     v_loss = 0.5 * torch.max(v_loss_unclipped, v_loss_clipped).mean()
                 else:
-                    v_loss = 0.5 * ((newvalue - b_returns[mb_inds]) ** 2).mean()
+                    v_loss = 0.5 * ((newvalue - b_returns_mb) ** 2).mean()
 
                 entropy_loss = entropy.mean()
                 loss = pg_loss - cfg.ent_coef * entropy_loss + v_loss * cfg.vf_coef
@@ -339,8 +454,8 @@ def train(
             if cfg.target_kl is not None and approx_kl > cfg.target_kl:
                 break
 
-        y_pred = b_values.cpu().numpy()
-        y_true = b_returns.cpu().numpy()
+        y_pred = values.reshape(-1).cpu().numpy()
+        y_true = returns.reshape(-1).cpu().numpy()
         var_y = np.var(y_true)
         explained_var = (
             float("nan") if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
@@ -372,6 +487,13 @@ def train(
                     "iteration": iteration,
                     "global_step": global_step,
                     "config": vars(cfg),
+                    "arch": {
+                        "in_channels": obs_shape[0],
+                        "n_actions": n_actions,
+                        "lstm_hidden_size": cfg.lstm_hidden_size,
+                        "lstm_num_layers": cfg.lstm_num_layers,
+                        "frame_stack": cfg.frame_stack,
+                    },
                 },
                 ckpt,
             )

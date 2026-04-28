@@ -59,10 +59,11 @@ def run_seed(
     seed: int,
     episodes: int,
     deterministic: bool,
+    frame_stack: int = 4,
     video_dir: Path | None = None,
 ) -> dict:
     if video_dir is not None:
-        env = make_static_env(env_id=env_id, seed=seed, render_mode="rgb_array")
+        env = make_static_env(env_id=env_id, seed=seed, render_mode="rgb_array", frame_stack=frame_stack)
         env = VideoCompositeWrapper(env, render_fps=4)
         video_dir.mkdir(parents=True, exist_ok=True)
         env = gym.wrappers.RecordVideo(
@@ -73,20 +74,24 @@ def run_seed(
             name_prefix=f"eval-seed{seed}",
         )
     else:
-        env = make_static_env(env_id=env_id, seed=seed)
+        env = make_static_env(env_id=env_id, seed=seed, frame_stack=frame_stack)
     successes, returns, lengths, reversals = [], [], [], []
     for ep in range(episodes):
         obs, _ = env.reset(seed=seed + ep)
         ep_ret, ep_len, ep_acts = 0.0, 0, []
         terminated = truncated = False
+        lstm_state = agent.initial_state(1, device)
+        done_t = torch.zeros(1, device=device)
         while not (terminated or truncated):
             x = torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0).to(device)
             with torch.no_grad():
                 if deterministic:
-                    h = agent.encode(x)
+                    h, lstm_state = agent.get_states(x, lstm_state, done_t)
                     action = int(agent.actor(h).argmax(dim=-1).item())
                 else:
-                    a, _, _, _ = agent.get_action_and_value(x)
+                    a, _, _, _, lstm_state = agent.get_action_and_value(
+                        x, lstm_state, done_t
+                    )
                     action = int(a.item())
             obs, r, terminated, truncated, _ = env.step(action)
             ep_ret += float(r)
@@ -113,12 +118,22 @@ def main() -> None:
     ckpt = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    probe = make_static_env(env_id=args.env_id, seed=seeds[0])
+    arch = ckpt.get("arch", {})
+    frame_stack = arch.get("frame_stack", 4)
+    lstm_hidden_size = arch.get("lstm_hidden_size", 256)
+    lstm_num_layers = arch.get("lstm_num_layers", 1)
+
+    probe = make_static_env(env_id=args.env_id, seed=seeds[0], frame_stack=frame_stack)
     obs_shape = probe.observation_space.shape
     n_actions = int(probe.action_space.n)
     probe.close()
 
-    agent = NatureCNN(in_channels=obs_shape[0], n_actions=n_actions).to(device)
+    agent = NatureCNN(
+        in_channels=obs_shape[0],
+        n_actions=n_actions,
+        lstm_hidden_size=lstm_hidden_size,
+        lstm_num_layers=lstm_num_layers,
+    ).to(device)
     agent.load_state_dict(ckpt["agent"])
     agent.eval()
 
@@ -134,6 +149,7 @@ def main() -> None:
             s,
             args.episodes,
             args.deterministic,
+            frame_stack=frame_stack,
             video_dir=video_dir if i == 0 else None,
         )
         for i, s in enumerate(seeds)
