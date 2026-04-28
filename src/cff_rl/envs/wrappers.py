@@ -54,6 +54,60 @@ class FrameStack4Wrapper(gym.ObservationWrapper):
     def _stack(self) -> np.ndarray:
         return np.stack(self._frames, axis=0)
 
+class StroboscopicWrapper(gym.ObservationWrapper):
+    """Repeat each grayscale frame for k steps before refreshing it."""
+
+    def __init__(self, env: gym.Env, k: int = 7):
+        super().__init__(env)
+        self.k = int(k)
+        self._hold_counter = 0
+        self._last_obs: np.ndarray | None = None
+        self.observation_space = env.observation_space
+
+    def reset(self, *, seed=None, options=None):
+        obs, info = self.env.reset(seed=seed, options=options)
+        self._last_obs = obs.copy()
+        self._hold_counter = self.k - 1
+        return self._last_obs, info
+
+    def observation(self, obs: np.ndarray) -> np.ndarray:
+        if self._hold_counter == 0:
+            self._last_obs = obs.copy()
+            self._hold_counter = self.k - 1
+        else:
+            self._hold_counter -= 1
+        return self._last_obs
+
+class VideoCompositeWrapper(gym.Wrapper):
+    """Override env.render() with a high-res top-down + first-person composite,
+    suitable for RecordVideo. Does not affect the observation pipeline.
+
+    The underlying MiniWorld env must have been built with render_mode='rgb_array'
+    and a `vis_fb` framebuffer (any window_width/window_height). We call
+    render_top_view() and render_obs() directly on the unwrapped env, then
+    paste them side-by-side into a single uint8 frame.
+    """
+
+    def __init__(self, env: gym.Env, render_fps: int = 4):
+        super().__init__(env)
+        # RecordVideo reads metadata["render_fps"]; lower it so each discrete
+        # action (90 deg turn or 0.5 forward) is visible for a moment.
+        self.metadata = {**self.env.metadata, "render_fps": render_fps}
+
+    def render(self):  # type: ignore[override]
+        inner = self.env.unwrapped
+        td = inner.render_top_view(inner.vis_fb)  # (H, W, 3)
+        fp = inner.render_obs(inner.vis_fb)        # (H, W, 3)
+        h = max(td.shape[0], fp.shape[0])
+
+        def _pad(img: np.ndarray) -> np.ndarray:
+            if img.shape[0] == h:
+                return img
+            pad = np.zeros((h - img.shape[0], img.shape[1], 3), dtype=img.dtype)
+            return np.concatenate([img, pad], axis=0)
+
+        return np.concatenate([_pad(td), _pad(fp)], axis=1)
+
 
 class ActionFilterWrapper(gym.ActionWrapper):
     """Expose a reduced discrete action space.

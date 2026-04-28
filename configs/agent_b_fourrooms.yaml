@@ -1,0 +1,27 @@
+# Agent B (5 Hz stroboscopic) — Regime 1 static, FourRooms (harder than OneRoom)
+exp_name: agent_b_fourrooms
+seed: 42
+
+env_id: MiniWorld-FourRooms-v0
+
+total_timesteps: 3000000
+num_envs: 16
+num_steps: 256
+learning_rate: 2.5e-4
+anneal_lr: true
+gamma: 0.99
+gae_lambda: 0.95
+num_minibatches: 4
+update_epochs: 4
+clip_coef: 0.2
+ent_coef: 0.005
+vf_coef: 0.5
+max_grad_norm: 0.5
+
+track: false
+wandb_project: cff-rl
+log_dir: runs
+checkpoint_every: 50
+
+record_video: true
+video_every: 100
