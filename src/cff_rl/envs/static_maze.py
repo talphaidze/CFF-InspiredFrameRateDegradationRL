@@ -38,7 +38,7 @@ from cff_rl.envs.wrappers import (
 STATIC_ACTIONS = [0, 1, 2]
 
 # 90-degree turns keep state transitions discrete (proposal § Method, Regime 1).
-TURN_STEP_DEG = 90
+TURN_STEP_DEG = 45
 # Fixed, moderate forward speed — the proposal specifies constant low speed to
 # remove velocity dynamics from Regime 1.
 FORWARD_STEP = 0.5
