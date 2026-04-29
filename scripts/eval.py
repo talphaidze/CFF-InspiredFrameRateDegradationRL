@@ -5,6 +5,10 @@ across N episodes. This script reports success rate, mean return, mean
 episode length, and mean direction-reversal count for a given checkpoint,
 aggregated across one or more seeds.
 
+Dispatches on `arch.recurrent` saved in the checkpoint to load either
+the feed-forward `NatureCNN` (ppo.py) or the recurrent `RecurrentNatureCNN`
+(ppo_lstm.py).
+
 Usage:
     python scripts/eval.py --checkpoint runs/<run>/ckpt_000050.pt --episodes 50
     python scripts/eval.py --checkpoint runs/<run>/ckpt_000050.pt --seeds 1 2 3 4 5 --episodes 50
@@ -20,6 +24,7 @@ import numpy as np
 import torch
 
 from cff_rl.agents.ppo import NatureCNN, _count_reversals
+from cff_rl.agents.ppo_lstm import RecurrentNatureCNN
 from cff_rl.envs.static_maze import make_static_env
 from cff_rl.envs.wrappers import VideoCompositeWrapper
 
@@ -53,17 +58,20 @@ def parse_args() -> argparse.Namespace:
 
 
 def run_seed(
-    agent: NatureCNN,
+    agent,
     device: torch.device,
     env_id: str,
     seed: int,
     episodes: int,
     deterministic: bool,
+    recurrent: bool,
     frame_stack: int = 4,
     video_dir: Path | None = None,
 ) -> dict:
     if video_dir is not None:
-        env = make_static_env(env_id=env_id, seed=seed, render_mode="rgb_array", frame_stack=frame_stack)
+        env = make_static_env(
+            env_id=env_id, seed=seed, render_mode="rgb_array", frame_stack=frame_stack
+        )
         env = VideoCompositeWrapper(env, render_fps=4)
         video_dir.mkdir(parents=True, exist_ok=True)
         env = gym.wrappers.RecordVideo(
@@ -80,19 +88,28 @@ def run_seed(
         obs, _ = env.reset(seed=seed + ep)
         ep_ret, ep_len, ep_acts = 0.0, 0, []
         terminated = truncated = False
-        lstm_state = agent.initial_state(1, device)
-        done_t = torch.zeros(1, device=device)
+        if recurrent:
+            lstm_state = agent.initial_state(1, device)
+            done_t = torch.zeros(1, device=device)
         while not (terminated or truncated):
             x = torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0).to(device)
             with torch.no_grad():
-                if deterministic:
-                    h, lstm_state = agent.get_states(x, lstm_state, done_t)
-                    action = int(agent.actor(h).argmax(dim=-1).item())
+                if recurrent:
+                    if deterministic:
+                        h, lstm_state = agent.get_states(x, lstm_state, done_t)
+                        action = int(agent.actor(h).argmax(dim=-1).item())
+                    else:
+                        a, _, _, _, lstm_state = agent.get_action_and_value(
+                            x, lstm_state, done_t
+                        )
+                        action = int(a.item())
                 else:
-                    a, _, _, _, lstm_state = agent.get_action_and_value(
-                        x, lstm_state, done_t
-                    )
-                    action = int(a.item())
+                    if deterministic:
+                        h = agent.encode(x)
+                        action = int(agent.actor(h).argmax(dim=-1).item())
+                    else:
+                        a, _, _, _ = agent.get_action_and_value(x)
+                        action = int(a.item())
             obs, r, terminated, truncated, _ = env.step(action)
             ep_ret += float(r)
             ep_len += 1
@@ -119,6 +136,8 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     arch = ckpt.get("arch", {})
+    # Backwards-compat: older LSTM checkpoints stored `use_lstm` instead.
+    recurrent = arch.get("recurrent", arch.get("use_lstm", False))
     frame_stack = arch.get("frame_stack", 4)
     lstm_hidden_size = arch.get("lstm_hidden_size", 256)
     lstm_num_layers = arch.get("lstm_num_layers", 1)
@@ -128,14 +147,18 @@ def main() -> None:
     n_actions = int(probe.action_space.n)
     probe.close()
 
-    agent = NatureCNN(
-        in_channels=obs_shape[0],
-        n_actions=n_actions,
-        lstm_hidden_size=lstm_hidden_size,
-        lstm_num_layers=lstm_num_layers,
-    ).to(device)
+    if recurrent:
+        agent = RecurrentNatureCNN(
+            in_channels=obs_shape[0],
+            n_actions=n_actions,
+            lstm_hidden_size=lstm_hidden_size,
+            lstm_num_layers=lstm_num_layers,
+        ).to(device)
+    else:
+        agent = NatureCNN(in_channels=obs_shape[0], n_actions=n_actions).to(device)
     agent.load_state_dict(ckpt["agent"])
     agent.eval()
+    print(f"agent: {'recurrent (LSTM)' if recurrent else 'feed-forward'}, frame_stack={frame_stack}")
 
     video_dir = None
     if args.record_video:
@@ -149,6 +172,7 @@ def main() -> None:
             s,
             args.episodes,
             args.deterministic,
+            recurrent=recurrent,
             frame_stack=frame_stack,
             video_dir=video_dir if i == 0 else None,
         )

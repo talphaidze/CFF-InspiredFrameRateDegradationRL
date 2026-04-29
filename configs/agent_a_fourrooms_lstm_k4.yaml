@@ -1,6 +1,6 @@
-# Agent A — FourRooms with recurrent (LSTM) policy, single-frame obs.
-# Ablation: LSTM-only temporal memory (no frame stacking).
-exp_name: agent_a_fourrooms_lstm
+# Agent A — FourRooms with recurrent (LSTM) policy + 4-frame stack.
+# Ablation: LSTM on top of stacked frames (combine both temporal mechanisms).
+exp_name: agent_a_fourrooms_lstm_k4
 seed: 42
 
 env_id: MiniWorld-FourRooms-v0
@@ -19,9 +19,8 @@ ent_coef: 0.005
 vf_coef: 0.5
 max_grad_norm: 0.5
 
-# LSTM-only: drop frame stacking, rely on recurrent memory.
 recurrent: true
-frame_stack: 1
+frame_stack: 4
 lstm_hidden_size: 256
 lstm_num_layers: 1
 
