@@ -13,7 +13,8 @@ from pathlib import Path
 import gymnasium as gym
 import yaml
 
-from cff_rl.agents.ppo import PPOConfig, train as ppo_train
+from cff_rl.agents.ppo import PPOConfig, train as ppo_train_ff
+from cff_rl.agents.ppo_lstm import train as ppo_train_lstm
 from cff_rl.envs.static_maze import make_static_env
 from cff_rl.envs.wrappers import VideoCompositeWrapper
 
@@ -90,7 +91,9 @@ def main() -> None:
 
     _os.environ["CFF_RUN_NAME"] = run_name
 
-    ppo_train(cfg, env_fn)
+    train_fn = ppo_train_lstm if cfg.recurrent else ppo_train_ff
+    print(f"agent: {'recurrent (LSTM)' if cfg.recurrent else 'feed-forward'}")
+    train_fn(cfg, env_fn)
 
 
 if __name__ == "__main__":
