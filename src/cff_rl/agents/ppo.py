@@ -67,6 +67,13 @@ class PPOConfig:
     lstm_hidden_size: int = 256
     lstm_num_layers: int = 1
 
+    # Proprioceptive extras (NavA3C-style): prev_action one-hot + prev_reward
+    # + heading sin/cos. Toggles a Dict obs space and concat-after-FC.
+    use_proprio: bool = False
+    # FourRooms uses 90° turns by default; lower values are a learning-side
+    # ablation, not a CFF claim.
+    turn_step_deg: int = 90
+
     # Derived at runtime
     batch_size: int = field(init=False, default=0)
     minibatch_size: int = field(init=False, default=0)
@@ -93,11 +100,14 @@ def layer_init(layer: nn.Module, std: float = np.sqrt(2), bias_const: float = 0.
 class NatureCNN(nn.Module):
     """Feed-forward CNN policy over a (C, 64, 64) uint8 image stack.
 
-    Temporal context comes from frame stacking only.
+    Temporal context comes from frame stacking only. Optional `n_extras`
+    proprioceptive scalars are concatenated after the FC(512) layer; when
+    `n_extras == 0` the network is identical to the original.
     """
 
-    def __init__(self, in_channels: int, n_actions: int):
+    def __init__(self, in_channels: int, n_actions: int, n_extras: int = 0):
         super().__init__()
+        self.n_extras = int(n_extras)
         self.network = nn.Sequential(
             layer_init(nn.Conv2d(in_channels, 32, 8, stride=4)),
             nn.ReLU(),
@@ -114,19 +124,31 @@ class NatureCNN(nn.Module):
             layer_init(nn.Linear(feat_dim, 512)),
             nn.ReLU(),
         )
-        self.actor = layer_init(nn.Linear(512, n_actions), std=0.01)
-        self.critic = layer_init(nn.Linear(512, 1), std=1.0)
+        head_dim = 512 + self.n_extras
+        self.actor = layer_init(nn.Linear(head_dim, n_actions), std=0.01)
+        self.critic = layer_init(nn.Linear(head_dim, 1), std=1.0)
 
-    def encode(self, x: torch.Tensor) -> torch.Tensor:
-        return self.fc(self.network(x / 255.0))
+    def encode(
+        self, x: torch.Tensor, extras: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        h = self.fc(self.network(x / 255.0))
+        if self.n_extras > 0:
+            assert extras is not None, "extras required when n_extras > 0"
+            h = torch.cat([h, extras], dim=1)
+        return h
 
-    def get_value(self, x: torch.Tensor) -> torch.Tensor:
-        return self.critic(self.encode(x))
+    def get_value(
+        self, x: torch.Tensor, extras: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        return self.critic(self.encode(x, extras))
 
     def get_action_and_value(
-        self, x: torch.Tensor, action: torch.Tensor | None = None
+        self,
+        x: torch.Tensor,
+        extras: torch.Tensor | None = None,
+        action: torch.Tensor | None = None,
     ):
-        h = self.encode(x)
+        h = self.encode(x, extras)
         logits = self.actor(h)
         dist = Categorical(logits=logits)
         if action is None:
@@ -204,13 +226,29 @@ def train(
         [lambda i=i: _make(i) for i in range(cfg.num_envs)]
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete)
-    obs_shape = envs.single_observation_space.shape  # (C, H, W)
     n_actions = int(envs.single_action_space.n)
 
-    agent = NatureCNN(in_channels=obs_shape[0], n_actions=n_actions).to(device)
+    if cfg.use_proprio:
+        assert isinstance(envs.single_observation_space, gym.spaces.Dict), (
+            "use_proprio=True requires Dict obs from ProprioWrapper"
+        )
+        obs_shape = envs.single_observation_space["image"].shape  # (C, H, W)
+        n_extras = int(envs.single_observation_space["extras"].shape[0])
+    else:
+        obs_shape = envs.single_observation_space.shape  # (C, H, W)
+        n_extras = 0
+
+    agent = NatureCNN(
+        in_channels=obs_shape[0], n_actions=n_actions, n_extras=n_extras
+    ).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=cfg.learning_rate, eps=1e-5)
 
     obs = torch.zeros((cfg.num_steps, cfg.num_envs) + obs_shape, dtype=torch.uint8).to(device)
+    extras_buf = (
+        torch.zeros((cfg.num_steps, cfg.num_envs, n_extras), dtype=torch.float32).to(device)
+        if n_extras > 0
+        else None
+    )
     actions = torch.zeros((cfg.num_steps, cfg.num_envs), dtype=torch.long).to(device)
     logprobs = torch.zeros((cfg.num_steps, cfg.num_envs)).to(device)
     rewards = torch.zeros((cfg.num_steps, cfg.num_envs)).to(device)
@@ -221,10 +259,17 @@ def train(
     ep_lengths = np.zeros(cfg.num_envs, dtype=np.int64)
     ep_action_hist: list[list[int]] = [[] for _ in range(cfg.num_envs)]
 
+    def _split_obs(o):
+        if n_extras > 0:
+            img = torch.as_tensor(o["image"], dtype=torch.uint8).to(device)
+            ext = torch.as_tensor(o["extras"], dtype=torch.float32).to(device)
+            return img, ext
+        return torch.as_tensor(o, dtype=torch.uint8).to(device), None
+
     global_step = 0
     start_time = time.time()
     next_obs_np, _ = envs.reset(seed=cfg.seed)
-    next_obs = torch.as_tensor(next_obs_np, dtype=torch.uint8).to(device)
+    next_obs, next_extras = _split_obs(next_obs_np)
     next_done = torch.zeros(cfg.num_envs).to(device)
 
     for iteration in range(1, cfg.num_iterations + 1):
@@ -235,11 +280,13 @@ def train(
         for step in range(cfg.num_steps):
             global_step += cfg.num_envs
             obs[step] = next_obs
+            if extras_buf is not None:
+                extras_buf[step] = next_extras
             dones[step] = next_done
 
             with torch.no_grad():
                 action, logprob, _, value = agent.get_action_and_value(
-                    next_obs.float()
+                    next_obs.float(), next_extras
                 )
                 values[step] = value.flatten()
             actions[step] = action
@@ -250,7 +297,7 @@ def train(
             )
             done = np.logical_or(terminated, truncated)
             rewards[step] = torch.as_tensor(reward, dtype=torch.float32).to(device)
-            next_obs = torch.as_tensor(next_obs_np, dtype=torch.uint8).to(device)
+            next_obs, next_extras = _split_obs(next_obs_np)
             next_done = torch.as_tensor(done, dtype=torch.float32).to(device)
 
             a_np = action.cpu().numpy()
@@ -273,7 +320,7 @@ def train(
                     ep_action_hist[i] = []
 
         with torch.no_grad():
-            next_value = agent.get_value(next_obs.float()).reshape(1, -1)
+            next_value = agent.get_value(next_obs.float(), next_extras).reshape(1, -1)
             advantages = torch.zeros_like(rewards).to(device)
             lastgaelam = 0
             for t in reversed(range(cfg.num_steps)):
@@ -294,6 +341,9 @@ def train(
             returns = advantages + values
 
         b_obs = obs.reshape((-1,) + obs_shape)
+        b_extras = (
+            extras_buf.reshape(-1, n_extras) if extras_buf is not None else None
+        )
         b_logprobs = logprobs.reshape(-1)
         b_actions = actions.reshape(-1)
         b_advantages = advantages.reshape(-1)
@@ -308,8 +358,9 @@ def train(
                 end = start + cfg.minibatch_size
                 mb_inds = b_inds[start:end]
 
+                mb_extras = b_extras[mb_inds] if b_extras is not None else None
                 _, newlogprob, entropy, newvalue = agent.get_action_and_value(
-                    b_obs[mb_inds].float(), b_actions[mb_inds]
+                    b_obs[mb_inds].float(), mb_extras, b_actions[mb_inds]
                 )
                 logratio = newlogprob - b_logprobs[mb_inds]
                 ratio = logratio.exp()
@@ -394,6 +445,9 @@ def train(
                         "n_actions": n_actions,
                         "recurrent": False,
                         "frame_stack": cfg.frame_stack,
+                        "use_proprio": cfg.use_proprio,
+                        "n_extras": n_extras,
+                        "turn_step_deg": cfg.turn_step_deg,
                     },
                 },
                 ckpt,

@@ -39,8 +39,10 @@ class RecurrentNatureCNN(nn.Module):
         n_actions: int,
         lstm_hidden_size: int = 256,
         lstm_num_layers: int = 1,
+        n_extras: int = 0,
     ):
         super().__init__()
+        self.n_extras = int(n_extras)
         self.network = nn.Sequential(
             layer_init(nn.Conv2d(in_channels, 32, 8, stride=4)),
             nn.ReLU(),
@@ -59,7 +61,8 @@ class RecurrentNatureCNN(nn.Module):
         )
         self.lstm_hidden_size = lstm_hidden_size
         self.lstm_num_layers = lstm_num_layers
-        self.lstm = nn.LSTM(512, lstm_hidden_size, num_layers=lstm_num_layers)
+        lstm_input_dim = 512 + self.n_extras
+        self.lstm = nn.LSTM(lstm_input_dim, lstm_hidden_size, num_layers=lstm_num_layers)
         for name, param in self.lstm.named_parameters():
             if "bias" in name:
                 nn.init.constant_(param, 0.0)
@@ -84,10 +87,14 @@ class RecurrentNatureCNN(nn.Module):
         x: torch.Tensor,
         lstm_state: tuple[torch.Tensor, torch.Tensor],
         done: torch.Tensor,
+        extras: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         feats = self.encode(x)
+        if self.n_extras > 0:
+            assert extras is not None, "extras required when n_extras > 0"
+            feats = torch.cat([feats, extras], dim=1)
         n_envs = lstm_state[0].shape[1]
-        feats = feats.reshape((-1, n_envs, feats.shape[1]))  # (T, N, 512)
+        feats = feats.reshape((-1, n_envs, feats.shape[1]))  # (T, N, 512+n_extras)
         done = done.reshape((-1, n_envs))  # (T, N)
         outputs: list[torch.Tensor] = []
         for h_t, d_t in zip(feats, done):
@@ -103,8 +110,9 @@ class RecurrentNatureCNN(nn.Module):
         x: torch.Tensor,
         lstm_state: tuple[torch.Tensor, torch.Tensor],
         done: torch.Tensor,
+        extras: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        h, _ = self.get_states(x, lstm_state, done)
+        h, _ = self.get_states(x, lstm_state, done, extras)
         return self.critic(h)
 
     def get_action_and_value(
@@ -113,8 +121,9 @@ class RecurrentNatureCNN(nn.Module):
         lstm_state: tuple[torch.Tensor, torch.Tensor],
         done: torch.Tensor,
         action: torch.Tensor | None = None,
+        extras: torch.Tensor | None = None,
     ):
-        h, lstm_state = self.get_states(x, lstm_state, done)
+        h, lstm_state = self.get_states(x, lstm_state, done, extras)
         logits = self.actor(h)
         dist = Categorical(logits=logits)
         if action is None:
@@ -181,18 +190,33 @@ def train(
         [lambda i=i: _make(i) for i in range(cfg.num_envs)]
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete)
-    obs_shape = envs.single_observation_space.shape
     n_actions = int(envs.single_action_space.n)
+
+    if cfg.use_proprio:
+        assert isinstance(envs.single_observation_space, gym.spaces.Dict), (
+            "use_proprio=True requires Dict obs from ProprioWrapper"
+        )
+        obs_shape = envs.single_observation_space["image"].shape
+        n_extras = int(envs.single_observation_space["extras"].shape[0])
+    else:
+        obs_shape = envs.single_observation_space.shape
+        n_extras = 0
 
     agent = RecurrentNatureCNN(
         in_channels=obs_shape[0],
         n_actions=n_actions,
         lstm_hidden_size=cfg.lstm_hidden_size,
         lstm_num_layers=cfg.lstm_num_layers,
+        n_extras=n_extras,
     ).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=cfg.learning_rate, eps=1e-5)
 
     obs = torch.zeros((cfg.num_steps, cfg.num_envs) + obs_shape, dtype=torch.uint8).to(device)
+    extras_buf = (
+        torch.zeros((cfg.num_steps, cfg.num_envs, n_extras), dtype=torch.float32).to(device)
+        if n_extras > 0
+        else None
+    )
     actions = torch.zeros((cfg.num_steps, cfg.num_envs), dtype=torch.long).to(device)
     logprobs = torch.zeros((cfg.num_steps, cfg.num_envs)).to(device)
     rewards = torch.zeros((cfg.num_steps, cfg.num_envs)).to(device)
@@ -203,10 +227,17 @@ def train(
     ep_lengths = np.zeros(cfg.num_envs, dtype=np.int64)
     ep_action_hist: list[list[int]] = [[] for _ in range(cfg.num_envs)]
 
+    def _split_obs(o):
+        if n_extras > 0:
+            img = torch.as_tensor(o["image"], dtype=torch.uint8).to(device)
+            ext = torch.as_tensor(o["extras"], dtype=torch.float32).to(device)
+            return img, ext
+        return torch.as_tensor(o, dtype=torch.uint8).to(device), None
+
     global_step = 0
     start_time = time.time()
     next_obs_np, _ = envs.reset(seed=cfg.seed)
-    next_obs = torch.as_tensor(next_obs_np, dtype=torch.uint8).to(device)
+    next_obs, next_extras = _split_obs(next_obs_np)
     next_done = torch.zeros(cfg.num_envs).to(device)
     next_lstm_state = agent.initial_state(cfg.num_envs, device)
 
@@ -222,12 +253,17 @@ def train(
         for step in range(cfg.num_steps):
             global_step += cfg.num_envs
             obs[step] = next_obs
+            if extras_buf is not None:
+                extras_buf[step] = next_extras
             dones[step] = next_done
 
             with torch.no_grad():
                 action, logprob, _, value, next_lstm_state = (
                     agent.get_action_and_value(
-                        next_obs.float(), next_lstm_state, next_done
+                        next_obs.float(),
+                        next_lstm_state,
+                        next_done,
+                        extras=next_extras,
                     )
                 )
                 values[step] = value.flatten()
@@ -239,7 +275,7 @@ def train(
             )
             done = np.logical_or(terminated, truncated)
             rewards[step] = torch.as_tensor(reward, dtype=torch.float32).to(device)
-            next_obs = torch.as_tensor(next_obs_np, dtype=torch.uint8).to(device)
+            next_obs, next_extras = _split_obs(next_obs_np)
             next_done = torch.as_tensor(done, dtype=torch.float32).to(device)
 
             a_np = action.cpu().numpy()
@@ -263,7 +299,7 @@ def train(
 
         with torch.no_grad():
             next_value = agent.get_value(
-                next_obs.float(), next_lstm_state, next_done
+                next_obs.float(), next_lstm_state, next_done, extras=next_extras
             ).reshape(1, -1)
             advantages = torch.zeros_like(rewards).to(device)
             lastgaelam = 0
@@ -309,8 +345,17 @@ def train(
 
                 flat_obs = mb_obs.reshape((-1,) + obs_shape).float()
                 flat_dones = mb_dones.reshape(-1)
+                flat_extras = (
+                    extras_buf[:, mb_envs_t].reshape(-1, n_extras)
+                    if extras_buf is not None
+                    else None
+                )
                 _, newlogprob, entropy, newvalue, _ = agent.get_action_and_value(
-                    flat_obs, mb_initial_state, flat_dones, mb_actions
+                    flat_obs,
+                    mb_initial_state,
+                    flat_dones,
+                    mb_actions,
+                    extras=flat_extras,
                 )
 
                 logratio = newlogprob - mb_logprobs_old
@@ -398,6 +443,9 @@ def train(
                         "lstm_hidden_size": cfg.lstm_hidden_size,
                         "lstm_num_layers": cfg.lstm_num_layers,
                         "frame_stack": cfg.frame_stack,
+                        "use_proprio": cfg.use_proprio,
+                        "n_extras": n_extras,
+                        "turn_step_deg": cfg.turn_step_deg,
                     },
                 },
                 ckpt,
