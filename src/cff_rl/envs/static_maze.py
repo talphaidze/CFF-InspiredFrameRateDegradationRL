@@ -29,6 +29,7 @@ from cff_rl.envs.wrappers import (
     ActionFilterWrapper,
     FrameStack4Wrapper,
     Grayscale64Wrapper,
+    ProprioWrapper,
     StroboscopicWrapper,
 )
 
@@ -55,6 +56,8 @@ def make_static_env(
     use_stroboscopic: bool = False,
     strobe_k: int = 7,
     frame_stack: int = FRAME_STACK,
+    use_proprio: bool = False,
+    turn_step_deg: int = TURN_STEP_DEG,
 ) -> gym.Env:
     """Build the Regime 1 environment for Agent A (35 Hz baseline)."""
     extra: dict = {}
@@ -70,10 +73,11 @@ def make_static_env(
         render_mode=render_mode,
         **extra,
     )
-    # Override motion params on the unwrapped MiniWorldEnv so turns are 90°
-    # and forward velocity is constant. `params.set(name, default, min, max)`.
+    # Override motion params on the unwrapped MiniWorldEnv so turns are a
+    # configurable fixed step (default 90°) and forward velocity is constant.
+    # `params.set(name, default, min, max)`.
     inner: MiniWorldEnv = env.unwrapped  # type: ignore[assignment]
-    inner.params.set("turn_step", TURN_STEP_DEG, TURN_STEP_DEG, TURN_STEP_DEG)
+    inner.params.set("turn_step", turn_step_deg, turn_step_deg, turn_step_deg)
     inner.params.set("forward_step", FORWARD_STEP, FORWARD_STEP, FORWARD_STEP)
 
     env = ActionFilterWrapper(env, STATIC_ACTIONS)
@@ -81,6 +85,8 @@ def make_static_env(
     if use_stroboscopic:
         env = StroboscopicWrapper(env, k=strobe_k)
     env = FrameStack4Wrapper(env, k=frame_stack)
+    if use_proprio:
+        env = ProprioWrapper(env, n_actions=len(STATIC_ACTIONS))
 
     if seed is not None:
         env.reset(seed=seed)

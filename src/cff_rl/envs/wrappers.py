@@ -109,6 +109,73 @@ class VideoCompositeWrapper(gym.Wrapper):
         return np.concatenate([_pad(td), _pad(fp)], axis=1)
 
 
+class ProprioWrapper(gym.Wrapper):
+    """Augment image obs with NavA3C-style proprioceptive scalars.
+
+    Observation becomes a dict::
+
+        {"image":  same shape/dtype as the inner env,
+         "extras": (n_actions + 1 + 2,) float32}
+
+    Extras layout: [prev_action one-hot, prev_reward, sin(heading), cos(heading)].
+    Heading is read from the unwrapped MiniWorld agent's `dir` (radians).
+    Extras are always fresh — `StroboscopicWrapper` only throttles the
+    visual stream, not proprioception.
+    """
+
+    def __init__(self, env: gym.Env, n_actions: int):
+        super().__init__(env)
+        assert isinstance(env.observation_space, spaces.Box)
+        self._image_space = env.observation_space
+        self.n_actions = int(n_actions)
+        self.n_extras = self.n_actions + 1 + 2
+        self.observation_space = spaces.Dict(
+            {
+                "image": self._image_space,
+                "extras": spaces.Box(
+                    low=-np.inf,
+                    high=np.inf,
+                    shape=(self.n_extras,),
+                    dtype=np.float32,
+                ),
+            }
+        )
+        self._prev_action: int | None = None
+        self._prev_reward: float = 0.0
+
+    def _heading(self) -> tuple[float, float]:
+        d = float(self.env.unwrapped.agent.dir)
+        return float(np.sin(d)), float(np.cos(d))
+
+    def _build_extras(self) -> np.ndarray:
+        extras = np.zeros(self.n_extras, dtype=np.float32)
+        if self._prev_action is not None:
+            extras[int(self._prev_action)] = 1.0
+        extras[self.n_actions] = float(self._prev_reward)
+        s, c = self._heading()
+        extras[self.n_actions + 1] = s
+        extras[self.n_actions + 2] = c
+        return extras
+
+    def reset(self, *, seed=None, options=None):
+        obs, info = self.env.reset(seed=seed, options=options)
+        self._prev_action = None
+        self._prev_reward = 0.0
+        return {"image": obs, "extras": self._build_extras()}, info
+
+    def step(self, action):
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        self._prev_action = int(action)
+        self._prev_reward = float(reward)
+        return (
+            {"image": obs, "extras": self._build_extras()},
+            reward,
+            terminated,
+            truncated,
+            info,
+        )
+
+
 class ActionFilterWrapper(gym.ActionWrapper):
     """Expose a reduced discrete action space.
 

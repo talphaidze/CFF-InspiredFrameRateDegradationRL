@@ -66,12 +66,19 @@ def run_seed(
     deterministic: bool,
     recurrent: bool,
     frame_stack: int = 4,
+    use_proprio: bool = False,
+    turn_step_deg: int = 90,
     video_dir: Path | None = None,
 ) -> dict:
+    common = dict(
+        env_id=env_id,
+        seed=seed,
+        frame_stack=frame_stack,
+        use_proprio=use_proprio,
+        turn_step_deg=turn_step_deg,
+    )
     if video_dir is not None:
-        env = make_static_env(
-            env_id=env_id, seed=seed, render_mode="rgb_array", frame_stack=frame_stack
-        )
+        env = make_static_env(render_mode="rgb_array", **common)
         env = VideoCompositeWrapper(env, render_fps=4)
         video_dir.mkdir(parents=True, exist_ok=True)
         env = gym.wrappers.RecordVideo(
@@ -82,7 +89,15 @@ def run_seed(
             name_prefix=f"eval-seed{seed}",
         )
     else:
-        env = make_static_env(env_id=env_id, seed=seed, frame_stack=frame_stack)
+        env = make_static_env(**common)
+
+    def _split(o):
+        if use_proprio:
+            img = torch.as_tensor(o["image"], dtype=torch.float32).unsqueeze(0).to(device)
+            ext = torch.as_tensor(o["extras"], dtype=torch.float32).unsqueeze(0).to(device)
+            return img, ext
+        return torch.as_tensor(o, dtype=torch.float32).unsqueeze(0).to(device), None
+
     successes, returns, lengths, reversals = [], [], [], []
     for ep in range(episodes):
         obs, _ = env.reset(seed=seed + ep)
@@ -92,23 +107,25 @@ def run_seed(
             lstm_state = agent.initial_state(1, device)
             done_t = torch.zeros(1, device=device)
         while not (terminated or truncated):
-            x = torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0).to(device)
+            x, ext = _split(obs)
             with torch.no_grad():
                 if recurrent:
                     if deterministic:
-                        h, lstm_state = agent.get_states(x, lstm_state, done_t)
+                        h, lstm_state = agent.get_states(
+                            x, lstm_state, done_t, extras=ext
+                        )
                         action = int(agent.actor(h).argmax(dim=-1).item())
                     else:
                         a, _, _, _, lstm_state = agent.get_action_and_value(
-                            x, lstm_state, done_t
+                            x, lstm_state, done_t, extras=ext
                         )
                         action = int(a.item())
                 else:
                     if deterministic:
-                        h = agent.encode(x)
+                        h = agent.encode(x, ext)
                         action = int(agent.actor(h).argmax(dim=-1).item())
                     else:
-                        a, _, _, _ = agent.get_action_and_value(x)
+                        a, _, _, _ = agent.get_action_and_value(x, ext)
                         action = int(a.item())
             obs, r, terminated, truncated, _ = env.step(action)
             ep_ret += float(r)
@@ -141,9 +158,21 @@ def main() -> None:
     frame_stack = arch.get("frame_stack", 4)
     lstm_hidden_size = arch.get("lstm_hidden_size", 256)
     lstm_num_layers = arch.get("lstm_num_layers", 1)
+    use_proprio = arch.get("use_proprio", False)
+    n_extras = arch.get("n_extras", 0)
+    turn_step_deg = arch.get("turn_step_deg", 90)
 
-    probe = make_static_env(env_id=args.env_id, seed=seeds[0], frame_stack=frame_stack)
-    obs_shape = probe.observation_space.shape
+    probe = make_static_env(
+        env_id=args.env_id,
+        seed=seeds[0],
+        frame_stack=frame_stack,
+        use_proprio=use_proprio,
+        turn_step_deg=turn_step_deg,
+    )
+    if use_proprio:
+        obs_shape = probe.observation_space["image"].shape
+    else:
+        obs_shape = probe.observation_space.shape
     n_actions = int(probe.action_space.n)
     probe.close()
 
@@ -153,12 +182,18 @@ def main() -> None:
             n_actions=n_actions,
             lstm_hidden_size=lstm_hidden_size,
             lstm_num_layers=lstm_num_layers,
+            n_extras=n_extras,
         ).to(device)
     else:
-        agent = NatureCNN(in_channels=obs_shape[0], n_actions=n_actions).to(device)
+        agent = NatureCNN(
+            in_channels=obs_shape[0], n_actions=n_actions, n_extras=n_extras
+        ).to(device)
     agent.load_state_dict(ckpt["agent"])
     agent.eval()
-    print(f"agent: {'recurrent (LSTM)' if recurrent else 'feed-forward'}, frame_stack={frame_stack}")
+    print(
+        f"agent: {'recurrent (LSTM)' if recurrent else 'feed-forward'}, "
+        f"frame_stack={frame_stack}, use_proprio={use_proprio}, turn={turn_step_deg}°"
+    )
 
     video_dir = None
     if args.record_video:
@@ -174,6 +209,8 @@ def main() -> None:
             args.deterministic,
             recurrent=recurrent,
             frame_stack=frame_stack,
+            use_proprio=use_proprio,
+            turn_step_deg=turn_step_deg,
             video_dir=video_dir if i == 0 else None,
         )
         for i, s in enumerate(seeds)

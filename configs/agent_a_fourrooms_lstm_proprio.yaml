@@ -1,0 +1,38 @@
+# Agent A — FourRooms with LSTM + NavA3C-style proprioceptive extras.
+# Same as agent_a_fourrooms_lstm.yaml + use_proprio: true.
+# Compare to seed-42 LSTM-only baseline (~0.69 success rate plateau).
+exp_name: agent_a_fourrooms_lstm_proprio
+seed: 42
+
+env_id: MiniWorld-FourRooms-v0
+
+total_timesteps: 3000000
+num_envs: 16
+num_steps: 256
+learning_rate: 2.5e-4
+anneal_lr: true
+gamma: 0.99
+gae_lambda: 0.95
+num_minibatches: 4
+update_epochs: 4
+clip_coef: 0.2
+ent_coef: 0.005
+vf_coef: 0.5
+max_grad_norm: 0.5
+
+recurrent: true
+frame_stack: 1
+lstm_hidden_size: 256
+lstm_num_layers: 1
+
+# Proprioceptive extras: prev_action one-hot (3) + prev_reward (1) + heading sin/cos (2).
+use_proprio: true
+turn_step_deg: 90
+
+track: false
+wandb_project: cff-rl
+log_dir: runs
+checkpoint_every: 50
+
+record_video: true
+video_every: 100

@@ -1,0 +1,36 @@
+# Agent A — FourRooms LSTM with 45° turn step (action-space ablation).
+# Same as agent_a_fourrooms_lstm.yaml + turn_step_deg: 45.
+exp_name: agent_a_fourrooms_lstm_turn45
+seed: 42
+
+env_id: MiniWorld-FourRooms-v0
+
+total_timesteps: 3000000
+num_envs: 16
+num_steps: 256
+learning_rate: 2.5e-4
+anneal_lr: true
+gamma: 0.99
+gae_lambda: 0.95
+num_minibatches: 4
+update_epochs: 4
+clip_coef: 0.2
+ent_coef: 0.005
+vf_coef: 0.5
+max_grad_norm: 0.5
+
+recurrent: true
+frame_stack: 1
+lstm_hidden_size: 256
+lstm_num_layers: 1
+
+use_proprio: false
+turn_step_deg: 45
+
+track: false
+wandb_project: cff-rl
+log_dir: runs
+checkpoint_every: 50
+
+record_video: true
+video_every: 100
