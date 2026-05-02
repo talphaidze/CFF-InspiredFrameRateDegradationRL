@@ -1,0 +1,46 @@
+# Agent C v2 (Active Vision) — FourRooms LSTM with 45° turn step.
+# 6-action active vision: 3 base movements × {5 Hz stroboscopic, 35 Hz fresh}.
+# The agent chooses its perception mode per step while always moving.
+# Action space: Discrete(6) — low_left, low_right, low_forward,
+#                               high_left, high_right, high_forward.
+exp_name: agent_c2_fourrooms_lstm_turn45
+seed: 42
+
+env_id: MiniWorld-FourRooms-v0
+
+total_timesteps: 3000000
+num_envs: 16
+num_steps: 256
+learning_rate: 2.5e-4
+anneal_lr: true
+gamma: 0.99
+gae_lambda: 0.95
+num_minibatches: 4
+update_epochs: 4
+clip_coef: 0.2
+ent_coef: 0.005
+vf_coef: 0.5
+max_grad_norm: 0.5
+
+recurrent: true
+frame_stack: 1
+lstm_hidden_size: 256
+lstm_num_layers: 1
+
+# Observation regime: Agent C v2 — active vision (per-action freq selection).
+use_stroboscopic: false
+use_active_gating: false
+use_active_vision: true
+strobe_k: 7         # hold length for 5 Hz actions (7 steps at 35 Hz physics tick)
+high_freq_steps: 35 # unused by C v2; kept for config parity
+
+use_proprio: false
+turn_step_deg: 45
+
+track: false
+wandb_project: cff-rl
+log_dir: runs
+checkpoint_every: 50
+
+record_video: true
+video_every: 100
