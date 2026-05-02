@@ -67,6 +67,10 @@ def run_seed(
     recurrent: bool,
     frame_stack: int = 4,
     use_proprio: bool = False,
+    use_stroboscopic: bool = False,
+    use_active_gating: bool = False,
+    strobe_k: int = 7,
+    high_freq_steps: int = 35,
     turn_step_deg: int = 90,
     video_dir: Path | None = None,
 ) -> dict:
@@ -75,6 +79,10 @@ def run_seed(
         seed=seed,
         frame_stack=frame_stack,
         use_proprio=use_proprio,
+        use_stroboscopic=use_stroboscopic,
+        use_active_gating=use_active_gating,
+        strobe_k=strobe_k,
+        high_freq_steps=high_freq_steps,
         turn_step_deg=turn_step_deg,
     )
     if video_dir is not None:
@@ -98,10 +106,10 @@ def run_seed(
             return img, ext
         return torch.as_tensor(o, dtype=torch.float32).unsqueeze(0).to(device), None
 
-    successes, returns, lengths, reversals = [], [], [], []
+    successes, returns, lengths, reversals, sal_counts = [], [], [], [], []
     for ep in range(episodes):
         obs, _ = env.reset(seed=seed + ep)
-        ep_ret, ep_len, ep_acts = 0.0, 0, []
+        ep_ret, ep_len, ep_acts, ep_sal = 0.0, 0, [], 0
         terminated = truncated = False
         if recurrent:
             lstm_state = agent.initial_state(1, device)
@@ -127,14 +135,17 @@ def run_seed(
                     else:
                         a, _, _, _ = agent.get_action_and_value(x, ext)
                         action = int(a.item())
-            obs, r, terminated, truncated, _ = env.step(action)
+            obs, r, terminated, truncated, info = env.step(action)
             ep_ret += float(r)
             ep_len += 1
             ep_acts.append(action)
+            if use_active_gating:
+                ep_sal += int(info["stop_and_look"])
         successes.append(1.0 if terminated else 0.0)
         returns.append(ep_ret)
         lengths.append(ep_len)
         reversals.append(_count_reversals(ep_acts))
+        sal_counts.append(ep_sal)
     env.close()
     return {
         "seed": seed,
@@ -143,6 +154,7 @@ def run_seed(
         "mean_return": float(np.mean(returns)),
         "mean_length": float(np.mean(lengths)),
         "mean_reversals": float(np.mean(reversals)),
+        "mean_sal_per_episode": float(np.mean(sal_counts)),
     }
 
 
@@ -159,6 +171,10 @@ def main() -> None:
     lstm_hidden_size = arch.get("lstm_hidden_size", 256)
     lstm_num_layers = arch.get("lstm_num_layers", 1)
     use_proprio = arch.get("use_proprio", False)
+    use_stroboscopic = arch.get("use_stroboscopic", False)
+    use_active_gating = arch.get("use_active_gating", False)
+    strobe_k = arch.get("strobe_k", 7)
+    high_freq_steps = arch.get("high_freq_steps", 35)
     n_extras = arch.get("n_extras", 0)
     turn_step_deg = arch.get("turn_step_deg", 90)
 
@@ -167,6 +183,10 @@ def main() -> None:
         seed=seeds[0],
         frame_stack=frame_stack,
         use_proprio=use_proprio,
+        use_stroboscopic=use_stroboscopic,
+        use_active_gating=use_active_gating,
+        strobe_k=strobe_k,
+        high_freq_steps=high_freq_steps,
         turn_step_deg=turn_step_deg,
     )
     if use_proprio:
@@ -190,7 +210,14 @@ def main() -> None:
         ).to(device)
     agent.load_state_dict(ckpt["agent"])
     agent.eval()
+
+    agent_type = (
+       "active-gating (C)" if use_active_gating
+        else "stroboscopic (B)" if use_stroboscopic
+        else " normal (A)"
+    )
     print(
+        f"agent type: {agent_type}"
         f"agent: {'recurrent (LSTM)' if recurrent else 'feed-forward'}, "
         f"frame_stack={frame_stack}, use_proprio={use_proprio}, turn={turn_step_deg}°"
     )
@@ -210,6 +237,10 @@ def main() -> None:
             recurrent=recurrent,
             frame_stack=frame_stack,
             use_proprio=use_proprio,
+            use_stroboscopic=use_stroboscopic,
+            use_active_gating=use_active_gating,
+            strobe_k=strobe_k,
+            high_freq_steps=high_freq_steps,
             turn_step_deg=turn_step_deg,
             video_dir=video_dir if i == 0 else None,
         )
@@ -231,6 +262,7 @@ def main() -> None:
         "mean_return": agg("mean_return"),
         "mean_length": agg("mean_length"),
         "mean_reversals": agg("mean_reversals"),
+        "mean_sal_per_episode": agg("mean_sal_per_episode"),
     }
 
     out = args.checkpoint.parent / "eval_results.json"
@@ -239,10 +271,13 @@ def main() -> None:
 
     print(f"checkpoint: {args.checkpoint}")
     print(f"seeds: {seeds}  episodes/seed: {args.episodes}")
-    print(f"{'metric':<16} {'mean':>10} {'std':>10}")
-    for k in ("success_rate", "mean_return", "mean_length", "mean_reversals"):
+    print(f"{'metric':<22} {'mean':>10} {'std':>10}")
+    metrics = ["success_rate", "mean_return", "mean_length", "mean_reversals"]
+    if use_active_gating:
+        metrics.append("mean_sal_per_episode")
+    for k in metrics:
         m, s = summary[k]
-        print(f"{k:<16} {m:>10.3f} {s:>10.3f}")
+        print(f"{k:<22} {m:>10.3f} {s:>10.3f}")
     print(f"wrote {out}")
 
 

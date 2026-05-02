@@ -18,6 +18,20 @@ ent_coef: 0.005
 vf_coef: 0.5
 max_grad_norm: 0.5
 
+recurrent: false
+frame_stack: 8
+lstm_hidden_size: 256  # unused by Agent B; kept for config parity across agents
+lstm_num_layers: 1     # unused by Agent B; kept for config parity across agents
+
+# Observation regime: Agent B holds each frame for strobe_k steps.
+use_stroboscopic: true
+use_active_gating: false
+strobe_k: 7
+high_freq_steps: 35  # unused by Agent B; kept for config parity across agents
+
+use_proprio: false
+turn_step_deg: 90
+
 track: false
 wandb_project: cff-rl
 log_dir: runs

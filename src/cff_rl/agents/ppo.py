@@ -70,6 +70,14 @@ class PPOConfig:
     # Proprioceptive extras (NavA3C-style): prev_action one-hot + prev_reward
     # + heading sin/cos. Toggles a Dict obs space and concat-after-FC.
     use_proprio: bool = False
+    # Agent B: hold each visual frame for strobe_k steps (~5 Hz).
+    use_stroboscopic: bool = False
+    strobe_k: int = 7
+    # Agent C: stroboscopic by default; STOP_AND_LOOK triggers 35 Hz for
+    # high_freq_steps consecutive steps (proposal: 35 steps = 1 s).
+    # Mutually exclusive with use_stroboscopic.
+    use_active_gating: bool = False
+    high_freq_steps: int = 35
     # FourRooms uses 90° turns by default; lower values are a learning-side
     # ablation, not a CFF claim.
     turn_step_deg: int = 90
@@ -258,6 +266,8 @@ def train(
     ep_returns = np.zeros(cfg.num_envs, dtype=np.float32)
     ep_lengths = np.zeros(cfg.num_envs, dtype=np.int64)
     ep_action_hist: list[list[int]] = [[] for _ in range(cfg.num_envs)]
+    # Agent C only: count STOP_AND_LOOK uses within each episode.
+    ep_sal_count = np.zeros(cfg.num_envs, dtype=np.int64)
 
     def _split_obs(o):
         if n_extras > 0:
@@ -301,10 +311,19 @@ def train(
             next_done = torch.as_tensor(done, dtype=torch.float32).to(device)
 
             a_np = action.cpu().numpy()
+            # Extract per-env STOP_AND_LOOK flag from vectorised infos (Agent C).
+            sal_step = (
+                np.asarray(
+                    infos["stop_and_look"], dtype=bool
+                )
+                if cfg.use_active_gating else None
+            )
             for i in range(cfg.num_envs):
                 ep_returns[i] += float(reward[i])
                 ep_lengths[i] += 1
                 ep_action_hist[i].append(int(a_np[i]))
+                if cfg.use_active_gating:
+                    ep_sal_count[i] += int(sal_step[i])
                 if done[i]:
                     success = 1.0 if bool(terminated[i]) else 0.0
                     writer.add_scalar("charts/episodic_return", ep_returns[i], global_step)
@@ -315,6 +334,16 @@ def train(
                         _count_reversals(ep_action_hist[i]),
                         global_step,
                     )
+                    if cfg.use_active_gating:
+                        writer.add_scalar(
+                            "charts/sal_per_episode", ep_sal_count[i], global_step
+                        )
+                        writer.add_scalar(
+                            "charts/sal_rate",
+                            ep_sal_count[i] / ep_lengths[i],
+                            global_step,
+                        )
+                        ep_sal_count[i] = 0
                     ep_returns[i] = 0.0
                     ep_lengths[i] = 0
                     ep_action_hist[i] = []
@@ -446,6 +475,10 @@ def train(
                         "recurrent": False,
                         "frame_stack": cfg.frame_stack,
                         "use_proprio": cfg.use_proprio,
+                        "use_stroboscopic": cfg.use_stroboscopic,
+                        "use_active_gating": cfg.use_active_gating,
+                        "strobe_k": cfg.strobe_k,
+                        "high_freq_steps": cfg.high_freq_steps,
                         "n_extras": n_extras,
                         "turn_step_deg": cfg.turn_step_deg,
                     },

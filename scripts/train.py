@@ -56,12 +56,13 @@ def main() -> None:
     every = max(1, cfg.video_every)
 
     def env_fn(seed: int, env_idx: int = 0):
-        use_stroboscopic = cfg.exp_name.startswith("agent_b")
         common = dict(
             env_id=env_id,
             seed=seed,
-            use_stroboscopic=use_stroboscopic,
-            strobe_k=7,
+            use_stroboscopic=cfg.use_stroboscopic,
+            use_active_gating=cfg.use_active_gating,
+            strobe_k=cfg.strobe_k,
+            high_freq_steps=cfg.high_freq_steps,
             frame_stack=cfg.frame_stack,
             use_proprio=cfg.use_proprio,
             turn_step_deg=cfg.turn_step_deg,

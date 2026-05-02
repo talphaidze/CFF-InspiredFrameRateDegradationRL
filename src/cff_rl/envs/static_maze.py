@@ -31,6 +31,7 @@ from cff_rl.envs.wrappers import (
     Grayscale64Wrapper,
     ProprioWrapper,
     StroboscopicWrapper,
+    ActiveGatingWrapper
 )
 
 # MiniWorld default action indices we care about for the static task.
@@ -54,12 +55,24 @@ def make_static_env(
     seed: int | None = None,
     render_mode: str | None = None,
     use_stroboscopic: bool = False,
+    use_active_gating: bool = False,
     strobe_k: int = 7,
+    high_freq_steps: int = 35,
     frame_stack: int = FRAME_STACK,
     use_proprio: bool = False,
     turn_step_deg: int = TURN_STEP_DEG,
 ) -> gym.Env:
-    """Build the Regime 1 environment for Agent A (35 Hz baseline)."""
+    """Build the Regime 1 environment for Agent A, B, C."""
+
+    # Print the inputs to make_static_env function to ensure no bugs are there
+    print(f"make_static_env called with: {locals()}")
+
+    if use_stroboscopic and use_active_gating:
+        raise ValueError(
+            "use_stroboscopic and use_active_gating are mutually exclusive: "
+            "ActiveGatingWrapper already subsumes stroboscopic behaviour."
+        )
+    
     extra: dict = {}
     if render_mode == "rgb_array":
         # Bigger framebuffer so the recorded video isn't tiny. Doesn't affect
@@ -82,16 +95,23 @@ def make_static_env(
 
     env = ActionFilterWrapper(env, STATIC_ACTIONS)
     env = Grayscale64Wrapper(env, size=OBS_SIZE)
-    if use_stroboscopic:
+    if use_stroboscopic:                          # Agent B
         env = StroboscopicWrapper(env, k=strobe_k)
+    elif use_active_gating:                       # Agent C
+        env = ActiveGatingWrapper(
+            env,
+            n_base_actions=len(STATIC_ACTIONS),
+            k=strobe_k,
+            high_freq_steps=high_freq_steps,
+        )
     env = FrameStack4Wrapper(env, k=frame_stack)
     if use_proprio:
-        env = ProprioWrapper(env, n_actions=len(STATIC_ACTIONS))
+        n_actions = len(STATIC_ACTIONS) + (1 if use_active_gating else 0)
+        env = ProprioWrapper(env, n_actions=n_actions)
 
     if seed is not None:
         env.reset(seed=seed)
     return env
-
 
 if __name__ == "__main__":
     # Smoke test: random policy across a few episodes, verify obs shape.

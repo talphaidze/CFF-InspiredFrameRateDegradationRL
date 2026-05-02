@@ -25,6 +25,12 @@ frame_stack: 1
 lstm_hidden_size: 256
 lstm_num_layers: 1
 
+# Observation regime: Agent A samples every frame at 35 Hz (no frame-hold).
+use_stroboscopic: false
+use_active_gating: false
+strobe_k: 7          # unused by Agent A; kept for config parity across agents
+high_freq_steps: 35  # unused by Agent A; kept for config parity across agents
+
 # Proprioceptive extras: prev_action one-hot (3) + prev_reward (1) + heading sin/cos (2).
 use_proprio: true
 turn_step_deg: 90

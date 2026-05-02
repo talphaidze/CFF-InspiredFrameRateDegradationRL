@@ -78,6 +78,131 @@ class StroboscopicWrapper(gym.ObservationWrapper):
             self._hold_counter -= 1
         return self._last_obs
 
+class ActiveGatingWrapper(gym.Wrapper):
+    """Agent C: stroboscopic-by-default with an added STOP_AND_LOOK action.
+ 
+    Observation frequency
+    ---------------------
+    - Default mode  : stroboscopic ~5 Hz — each fresh frame is held for
+                      ``k`` steps before the next env observation is consumed
+                      (identical behaviour to ``StroboscopicWrapper``).
+    - High-freq mode: triggered by STOP_AND_LOOK.  Fresh 35 Hz observations
+                      are returned for the next ``high_freq_steps`` steps,
+                      then the wrapper reverts automatically to stroboscopic.
+ 
+    Action space
+    ------------
+    The inner env is expected to already have a *filtered* Discrete action
+    space of size ``n_base_actions`` (e.g. 3 for {turn_left, turn_right,
+    move_forward}).  This wrapper appends one extra action:
+ 
+        action == n_base_actions  →  STOP_AND_LOOK
+            • Sets high-freq mode for ``high_freq_steps`` steps.
+            • Passes ``null_action`` to the inner env for this single step
+              (turn_left by default — the least-disruptive option available
+              since MiniWorld has no explicit idle/no-op action).
+ 
+    Placement
+    ---------
+    Stack order (Agent C)::
+ 
+        gym.make(...)
+        └─ ActionFilterWrapper        # reduces to 3 movement actions
+           └─ Grayscale64Wrapper      # RGB → (64,64) uint8
+              └─ ActiveGatingWrapper  # ← here; manages freq + action space
+                 └─ FrameStack4Wrapper
+                    └─ ProprioWrapper (optional)
+ 
+    Do NOT also apply ``StroboscopicWrapper`` — this wrapper fully subsumes it.
+    """
+ 
+    def __init__(
+        self,
+        env: gym.Env,
+        n_base_actions: int,
+        k: int = 7,
+        high_freq_steps: int = 35,
+        null_action: int = 0,
+    ):
+        """
+        Parameters
+        ----------
+        env            : inner env (after Grayscale64Wrapper).
+        n_base_actions : number of movement actions already exposed by the
+                         inner env (3 for the static maze).
+        k              : stroboscopic hold length in steps (default 7 → ~5 Hz
+                         at 35 Hz physics tick).
+        high_freq_steps: number of consecutive fresh-obs steps after a
+                         STOP_AND_LOOK (default 35 → 1 second at 35 Hz).
+        null_action    : inner-env action executed when STOP_AND_LOOK is
+                         chosen (default 0 = turn_left).
+        """
+        super().__init__(env)
+        if not isinstance(env.observation_space, spaces.Box):
+            raise TypeError(
+                "ActiveGatingWrapper expects a Box observation space "
+                f"(got {type(env.observation_space).__name__}). "
+                "Ensure Grayscale64Wrapper is applied first."
+            )
+        self.k = int(k)
+        self.high_freq_steps = int(high_freq_steps)
+        self.null_action = int(null_action)
+        self.n_base_actions = int(n_base_actions)
+        self.STOP_AND_LOOK: int = n_base_actions  # index of the new action
+ 
+        # Extend the action space by one slot for STOP_AND_LOOK.
+        self.action_space = spaces.Discrete(n_base_actions + 1)
+ 
+        # Internal state — reset on every episode.
+        self._hold_counter: int = 0
+        self._last_obs: np.ndarray | None = None
+        self._high_freq_remaining: int = 0
+ 
+    # ------------------------------------------------------------------
+    # Gym interface
+    # ------------------------------------------------------------------
+ 
+    def reset(self, *, seed=None, options=None):
+        obs, info = self.env.reset(seed=seed, options=options)
+        self._last_obs = obs.copy()
+        self._hold_counter = self.k - 1
+        self._high_freq_remaining = 0
+        return self._last_obs.copy(), info
+ 
+    def step(self, action: int):  # type: ignore[override]
+        is_sal = int(action) == self.STOP_AND_LOOK
+ 
+        if is_sal:
+            # Arm the high-frequency window and execute a null movement.
+            self._high_freq_remaining = self.high_freq_steps
+            inner_action = self.null_action
+        else:
+            inner_action = int(action)
+ 
+        obs, reward, terminated, truncated, info = self.env.step(inner_action)
+ 
+        # ---- observation gating logic ----------------------------------
+        if self._high_freq_remaining > 0:
+            # High-freq mode: deliver every fresh frame (35 Hz).
+            self._last_obs = obs.copy()
+            self._high_freq_remaining -= 1
+            if self._high_freq_remaining == 0:
+                # Window just closed; start a fresh stroboscopic cycle so the
+                # very next non-SAL step begins a full k-step hold.
+                self._hold_counter = self.k - 1
+        else:
+            # Stroboscopic mode: hold the last frame for k steps.
+            if self._hold_counter == 0:
+                self._last_obs = obs.copy()
+                self._hold_counter = self.k - 1
+            else:
+                self._hold_counter -= 1
+        # ---------------------------------------------------------------
+ 
+        info["stop_and_look"] = is_sal
+        info["high_freq_remaining"] = self._high_freq_remaining
+        return self._last_obs.copy(), reward, terminated, truncated, info
+   
 class VideoCompositeWrapper(gym.Wrapper):
     """Override env.render() with a high-res top-down + first-person composite,
     suitable for RecordVideo. Does not affect the observation pipeline.
