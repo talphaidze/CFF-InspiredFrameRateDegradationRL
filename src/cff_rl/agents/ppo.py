@@ -80,6 +80,7 @@ class PPOConfig:
     high_freq_steps: int = 35
     # Agent C v2: 6-action active vision (3 moves × {5 Hz, 35 Hz}).
     use_active_vision: bool = False
+    vision_cost: float = 0.01  # reward penalty per high-freq step
     # FourRooms uses 90° turns by default; lower values are a learning-side
     # ablation, not a CFF claim.
     turn_step_deg: int = 90

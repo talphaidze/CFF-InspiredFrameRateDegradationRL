@@ -31,6 +31,7 @@ lstm_num_layers: 1
 use_stroboscopic: false
 use_active_gating: false
 use_active_vision: true
+vision_cost: 0.01   # reward penalty per high-freq step
 strobe_k: 7         # hold length for 5 Hz actions (7 steps at 35 Hz physics tick)
 high_freq_steps: 35 # unused by C v2; kept for config parity
 

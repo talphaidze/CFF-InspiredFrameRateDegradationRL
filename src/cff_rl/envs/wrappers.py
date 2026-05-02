@@ -232,6 +232,7 @@ class ActiveVisionWrapper(gym.Wrapper):
         env: gym.Env,
         n_base_actions: int,
         k: int = 7,
+        vision_cost: float = 0.01,
     ):
         """
         Parameters
@@ -240,6 +241,7 @@ class ActiveVisionWrapper(gym.Wrapper):
         n_base_actions : number of movement actions (3 for static maze).
         k              : stroboscopic hold length for low-freq actions
                          (default 7 → ~5 Hz at 35 Hz physics tick).
+        vision_cost    : reward penalty per high-freq step (default 0.01).
         """
         super().__init__(env)
         if not isinstance(env.observation_space, spaces.Box):
@@ -250,6 +252,7 @@ class ActiveVisionWrapper(gym.Wrapper):
             )
         self.k = int(k)
         self.n_base_actions = int(n_base_actions)
+        self.vision_cost = float(vision_cost)
 
         # actions [0, n) = low-freq, actions [n, 2n) = high-freq
         self.action_space = spaces.Discrete(2 * n_base_actions)
@@ -269,6 +272,9 @@ class ActiveVisionWrapper(gym.Wrapper):
         inner_action = action % self.n_base_actions
 
         obs, reward, terminated, truncated, info = self.env.step(inner_action)
+
+        if high_freq:
+            reward -= self.vision_cost
 
         if high_freq:
             # 35 Hz: always deliver a fresh frame.

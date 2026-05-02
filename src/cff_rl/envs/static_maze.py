@@ -58,6 +58,7 @@ def make_static_env(
     use_stroboscopic: bool = False,
     use_active_gating: bool = False,
     use_active_vision: bool = False,
+    vision_cost: float = 0.01,
     strobe_k: int = 7,
     high_freq_steps: int = 35,
     frame_stack: int = FRAME_STACK,
@@ -112,6 +113,7 @@ def make_static_env(
             env,
             n_base_actions=len(STATIC_ACTIONS),
             k=strobe_k,
+            vision_cost=vision_cost,
         )
     env = FrameStack4Wrapper(env, k=frame_stack)
     if use_proprio:
