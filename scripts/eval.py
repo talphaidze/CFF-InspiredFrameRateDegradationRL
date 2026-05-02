@@ -69,6 +69,8 @@ def run_seed(
     use_proprio: bool = False,
     use_stroboscopic: bool = False,
     use_active_gating: bool = False,
+    use_active_vision: bool = False,
+    vision_cost: float = 0.01,
     strobe_k: int = 7,
     high_freq_steps: int = 35,
     turn_step_deg: int = 90,
@@ -81,6 +83,8 @@ def run_seed(
         use_proprio=use_proprio,
         use_stroboscopic=use_stroboscopic,
         use_active_gating=use_active_gating,
+        use_active_vision=use_active_vision,
+        vision_cost=vision_cost,
         strobe_k=strobe_k,
         high_freq_steps=high_freq_steps,
         turn_step_deg=turn_step_deg,
@@ -106,10 +110,10 @@ def run_seed(
             return img, ext
         return torch.as_tensor(o, dtype=torch.float32).unsqueeze(0).to(device), None
 
-    successes, returns, lengths, reversals, sal_counts = [], [], [], [], []
+    successes, returns, lengths, reversals, sal_counts, hf_counts = [], [], [], [], [], []
     for ep in range(episodes):
         obs, _ = env.reset(seed=seed + ep)
-        ep_ret, ep_len, ep_acts, ep_sal = 0.0, 0, [], 0
+        ep_ret, ep_len, ep_acts, ep_sal, ep_hf = 0.0, 0, [], 0, 0
         terminated = truncated = False
         if recurrent:
             lstm_state = agent.initial_state(1, device)
@@ -141,11 +145,14 @@ def run_seed(
             ep_acts.append(action)
             if use_active_gating:
                 ep_sal += int(info["stop_and_look"])
+            if use_active_vision:
+                ep_hf += int(info["high_freq"])
         successes.append(1.0 if terminated else 0.0)
         returns.append(ep_ret)
         lengths.append(ep_len)
         reversals.append(_count_reversals(ep_acts))
         sal_counts.append(ep_sal)
+        hf_counts.append(ep_hf)
     env.close()
     return {
         "seed": seed,
@@ -155,6 +162,7 @@ def run_seed(
         "mean_length": float(np.mean(lengths)),
         "mean_reversals": float(np.mean(reversals)),
         "mean_sal_per_episode": float(np.mean(sal_counts)),
+        "mean_highfreq_per_episode": float(np.mean(hf_counts)),
     }
 
 
@@ -173,10 +181,12 @@ def main() -> None:
     use_proprio = arch.get("use_proprio", False)
     use_stroboscopic = arch.get("use_stroboscopic", False)
     use_active_gating = arch.get("use_active_gating", False)
+    use_active_vision = arch.get("use_active_vision", False)
     strobe_k = arch.get("strobe_k", 7)
     high_freq_steps = arch.get("high_freq_steps", 35)
     n_extras = arch.get("n_extras", 0)
     turn_step_deg = arch.get("turn_step_deg", 90)
+    vision_cost = arch.get("vision_cost", 0.01)
 
     probe = make_static_env(
         env_id=args.env_id,
@@ -185,6 +195,8 @@ def main() -> None:
         use_proprio=use_proprio,
         use_stroboscopic=use_stroboscopic,
         use_active_gating=use_active_gating,
+        use_active_vision=use_active_vision,
+        vision_cost=vision_cost,
         strobe_k=strobe_k,
         high_freq_steps=high_freq_steps,
         turn_step_deg=turn_step_deg,
@@ -212,9 +224,10 @@ def main() -> None:
     agent.eval()
 
     agent_type = (
-       "active-gating (C)" if use_active_gating
+        "active-vision (C v2)" if use_active_vision
+        else "active-gating (C)" if use_active_gating
         else "stroboscopic (B)" if use_stroboscopic
-        else " normal (A)"
+        else "normal (A)"
     )
     print(
         f"agent type: {agent_type}"
@@ -239,6 +252,8 @@ def main() -> None:
             use_proprio=use_proprio,
             use_stroboscopic=use_stroboscopic,
             use_active_gating=use_active_gating,
+            use_active_vision=use_active_vision,
+            vision_cost=vision_cost,
             strobe_k=strobe_k,
             high_freq_steps=high_freq_steps,
             turn_step_deg=turn_step_deg,
@@ -263,6 +278,7 @@ def main() -> None:
         "mean_length": agg("mean_length"),
         "mean_reversals": agg("mean_reversals"),
         "mean_sal_per_episode": agg("mean_sal_per_episode"),
+        "mean_highfreq_per_episode": agg("mean_highfreq_per_episode"),
     }
 
     out = args.checkpoint.parent / "eval_results.json"
@@ -275,6 +291,8 @@ def main() -> None:
     metrics = ["success_rate", "mean_return", "mean_length", "mean_reversals"]
     if use_active_gating:
         metrics.append("mean_sal_per_episode")
+    if use_active_vision:
+        metrics.append("mean_highfreq_per_episode")
     for k in metrics:
         m, s = summary[k]
         print(f"{k:<22} {m:>10.3f} {s:>10.3f}")

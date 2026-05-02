@@ -502,6 +502,7 @@ def train(
                         "use_stroboscopic": cfg.use_stroboscopic,
                         "use_active_gating": cfg.use_active_gating,
                         "use_active_vision": cfg.use_active_vision,
+                        "vision_cost": cfg.vision_cost,
                         "strobe_k": cfg.strobe_k,
                         "high_freq_steps": cfg.high_freq_steps,
                         "n_extras": n_extras,
