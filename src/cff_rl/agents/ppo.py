@@ -78,6 +78,9 @@ class PPOConfig:
     # Mutually exclusive with use_stroboscopic.
     use_active_gating: bool = False
     high_freq_steps: int = 35
+    # Agent C v2: 6-action active vision (3 moves × {5 Hz, 35 Hz}).
+    use_active_vision: bool = False
+    vision_cost: float = 0.01  # reward penalty per high-freq step
     # FourRooms uses 90° turns by default; lower values are a learning-side
     # ablation, not a CFF claim.
     turn_step_deg: int = 90
@@ -266,8 +269,10 @@ def train(
     ep_returns = np.zeros(cfg.num_envs, dtype=np.float32)
     ep_lengths = np.zeros(cfg.num_envs, dtype=np.int64)
     ep_action_hist: list[list[int]] = [[] for _ in range(cfg.num_envs)]
-    # Agent C only: count STOP_AND_LOOK uses within each episode.
+    # Agent C v1: count STOP_AND_LOOK uses within each episode.
     ep_sal_count = np.zeros(cfg.num_envs, dtype=np.int64)
+    # Agent C v2: count high-freq action choices within each episode.
+    ep_hf_count = np.zeros(cfg.num_envs, dtype=np.int64)
 
     def _split_obs(o):
         if n_extras > 0:
@@ -311,12 +316,19 @@ def train(
             next_done = torch.as_tensor(done, dtype=torch.float32).to(device)
 
             a_np = action.cpu().numpy()
-            # Extract per-env STOP_AND_LOOK flag from vectorised infos (Agent C).
+            # Extract per-env STOP_AND_LOOK flag from vectorised infos (Agent C v1).
             sal_step = (
                 np.asarray(
                     infos["stop_and_look"], dtype=bool
                 )
                 if cfg.use_active_gating else None
+            )
+            # Extract per-env high-freq flag from vectorised infos (Agent C v2).
+            hf_step = (
+                np.asarray(
+                    infos["high_freq"], dtype=bool
+                )
+                if cfg.use_active_vision else None
             )
             for i in range(cfg.num_envs):
                 ep_returns[i] += float(reward[i])
@@ -324,6 +336,8 @@ def train(
                 ep_action_hist[i].append(int(a_np[i]))
                 if cfg.use_active_gating:
                     ep_sal_count[i] += int(sal_step[i])
+                if cfg.use_active_vision:
+                    ep_hf_count[i] += int(hf_step[i])
                 if done[i]:
                     success = 1.0 if bool(terminated[i]) else 0.0
                     writer.add_scalar("charts/episodic_return", ep_returns[i], global_step)
@@ -344,6 +358,16 @@ def train(
                             global_step,
                         )
                         ep_sal_count[i] = 0
+                    if cfg.use_active_vision:
+                        writer.add_scalar(
+                            "charts/highfreq_per_episode", ep_hf_count[i], global_step
+                        )
+                        writer.add_scalar(
+                            "charts/highfreq_rate",
+                            ep_hf_count[i] / ep_lengths[i],
+                            global_step,
+                        )
+                        ep_hf_count[i] = 0
                     ep_returns[i] = 0.0
                     ep_lengths[i] = 0
                     ep_action_hist[i] = []
@@ -477,6 +501,8 @@ def train(
                         "use_proprio": cfg.use_proprio,
                         "use_stroboscopic": cfg.use_stroboscopic,
                         "use_active_gating": cfg.use_active_gating,
+                        "use_active_vision": cfg.use_active_vision,
+                        "vision_cost": cfg.vision_cost,
                         "strobe_k": cfg.strobe_k,
                         "high_freq_steps": cfg.high_freq_steps,
                         "n_extras": n_extras,

@@ -27,11 +27,12 @@ from miniworld.miniworld import MiniWorldEnv  # noqa: E402
 
 from cff_rl.envs.wrappers import (
     ActionFilterWrapper,
+    ActiveGatingWrapper,
+    ActiveVisionWrapper,
     FrameStack4Wrapper,
     Grayscale64Wrapper,
     ProprioWrapper,
     StroboscopicWrapper,
-    ActiveGatingWrapper
 )
 
 # MiniWorld default action indices we care about for the static task.
@@ -56,6 +57,8 @@ def make_static_env(
     render_mode: str | None = None,
     use_stroboscopic: bool = False,
     use_active_gating: bool = False,
+    use_active_vision: bool = False,
+    vision_cost: float = 0.01,
     strobe_k: int = 7,
     high_freq_steps: int = 35,
     frame_stack: int = FRAME_STACK,
@@ -67,10 +70,11 @@ def make_static_env(
     # Print the inputs to make_static_env function to ensure no bugs are there
     print(f"make_static_env called with: {locals()}")
 
-    if use_stroboscopic and use_active_gating:
+    n_exclusive = sum([use_stroboscopic, use_active_gating, use_active_vision])
+    if n_exclusive > 1:
         raise ValueError(
-            "use_stroboscopic and use_active_gating are mutually exclusive: "
-            "ActiveGatingWrapper already subsumes stroboscopic behaviour."
+            "use_stroboscopic, use_active_gating, and use_active_vision are "
+            "mutually exclusive — pick exactly one (or none for Agent A)."
         )
     
     extra: dict = {}
@@ -97,16 +101,28 @@ def make_static_env(
     env = Grayscale64Wrapper(env, size=OBS_SIZE)
     if use_stroboscopic:                          # Agent B
         env = StroboscopicWrapper(env, k=strobe_k)
-    elif use_active_gating:                       # Agent C
+    elif use_active_gating:                       # Agent C v1 (STOP_AND_LOOK)
         env = ActiveGatingWrapper(
             env,
             n_base_actions=len(STATIC_ACTIONS),
             k=strobe_k,
             high_freq_steps=high_freq_steps,
         )
+    elif use_active_vision:                       # Agent C v2 (6 actions)
+        env = ActiveVisionWrapper(
+            env,
+            n_base_actions=len(STATIC_ACTIONS),
+            k=strobe_k,
+            vision_cost=vision_cost,
+        )
     env = FrameStack4Wrapper(env, k=frame_stack)
     if use_proprio:
-        n_actions = len(STATIC_ACTIONS) + (1 if use_active_gating else 0)
+        if use_active_vision:
+            n_actions = 2 * len(STATIC_ACTIONS)
+        elif use_active_gating:
+            n_actions = len(STATIC_ACTIONS) + 1
+        else:
+            n_actions = len(STATIC_ACTIONS)
         env = ProprioWrapper(env, n_actions=n_actions)
 
     if seed is not None:

@@ -203,6 +203,97 @@ class ActiveGatingWrapper(gym.Wrapper):
         info["high_freq_remaining"] = self._high_freq_remaining
         return self._last_obs.copy(), reward, terminated, truncated, info
    
+class ActiveVisionWrapper(gym.Wrapper):
+    """Agent C v2: per-action perception mode selection.
+
+    Instead of a separate STOP_AND_LOOK action, the agent chooses between
+    two perception regimes on every step by selecting from a doubled action
+    space:
+
+        actions 0 .. n-1  →  base movement with 5 Hz stroboscopic vision
+        actions n .. 2n-1 →  same movement with 35 Hz fresh-frame vision
+
+    The agent always moves — there is no freezing.  It simply decides
+    *how well it wants to see* while moving, mirroring the active-vision
+    idea that organisms modulate perception during locomotion.
+
+    Placement (same position as ActiveGatingWrapper)::
+
+        gym.make(...)
+        └─ ActionFilterWrapper
+           └─ Grayscale64Wrapper
+              └─ ActiveVisionWrapper   # ← here
+                 └─ FrameStack4Wrapper
+                    └─ ProprioWrapper (optional)
+    """
+
+    def __init__(
+        self,
+        env: gym.Env,
+        n_base_actions: int,
+        k: int = 7,
+        vision_cost: float = 0.01,
+    ):
+        """
+        Parameters
+        ----------
+        env            : inner env (after Grayscale64Wrapper).
+        n_base_actions : number of movement actions (3 for static maze).
+        k              : stroboscopic hold length for low-freq actions
+                         (default 7 → ~5 Hz at 35 Hz physics tick).
+        vision_cost    : reward penalty per high-freq step (default 0.01).
+        """
+        super().__init__(env)
+        if not isinstance(env.observation_space, spaces.Box):
+            raise TypeError(
+                "ActiveVisionWrapper expects a Box observation space "
+                f"(got {type(env.observation_space).__name__}). "
+                "Ensure Grayscale64Wrapper is applied first."
+            )
+        self.k = int(k)
+        self.n_base_actions = int(n_base_actions)
+        self.vision_cost = float(vision_cost)
+
+        # actions [0, n) = low-freq, actions [n, 2n) = high-freq
+        self.action_space = spaces.Discrete(2 * n_base_actions)
+
+        self._hold_counter: int = 0
+        self._last_obs: np.ndarray | None = None
+
+    def reset(self, *, seed=None, options=None):
+        obs, info = self.env.reset(seed=seed, options=options)
+        self._last_obs = obs.copy()
+        self._hold_counter = self.k - 1
+        return self._last_obs.copy(), info
+
+    def step(self, action: int):  # type: ignore[override]
+        action = int(action)
+        high_freq = action >= self.n_base_actions
+        inner_action = action % self.n_base_actions
+
+        obs, reward, terminated, truncated, info = self.env.step(inner_action)
+
+        if high_freq:
+            reward -= self.vision_cost
+
+        if high_freq:
+            # 35 Hz: always deliver a fresh frame.
+            self._last_obs = obs.copy()
+            # Reset stroboscopic counter so next low-freq action starts
+            # a full k-step hold.
+            self._hold_counter = self.k - 1
+        else:
+            # 5 Hz stroboscopic: hold frame for k steps.
+            if self._hold_counter == 0:
+                self._last_obs = obs.copy()
+                self._hold_counter = self.k - 1
+            else:
+                self._hold_counter -= 1
+
+        info["high_freq"] = high_freq
+        return self._last_obs.copy(), reward, terminated, truncated, info
+
+
 class VideoCompositeWrapper(gym.Wrapper):
     """Override env.render() with a high-res top-down + first-person composite,
     suitable for RecordVideo. Does not affect the observation pipeline.
