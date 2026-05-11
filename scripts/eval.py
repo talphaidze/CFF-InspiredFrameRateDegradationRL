@@ -54,6 +54,10 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Where to write videos. Defaults to <checkpoint_dir>/eval_videos.",
     )
+    # Overrides for checkpoints whose `arch` dict pre-dates the perception flags.
+    p.add_argument("--use-stroboscopic", action="store_true")
+    p.add_argument("--use-active-gating", action="store_true")
+    p.add_argument("--use-active-vision", action="store_true")
     return p.parse_args()
 
 
@@ -179,9 +183,9 @@ def main() -> None:
     lstm_hidden_size = arch.get("lstm_hidden_size", 256)
     lstm_num_layers = arch.get("lstm_num_layers", 1)
     use_proprio = arch.get("use_proprio", False)
-    use_stroboscopic = arch.get("use_stroboscopic", False)
-    use_active_gating = arch.get("use_active_gating", False)
-    use_active_vision = arch.get("use_active_vision", False)
+    use_stroboscopic = arch.get("use_stroboscopic", False) or args.use_stroboscopic
+    use_active_gating = arch.get("use_active_gating", False) or args.use_active_gating
+    use_active_vision = arch.get("use_active_vision", False) or args.use_active_vision
     strobe_k = arch.get("strobe_k", 7)
     high_freq_steps = arch.get("high_freq_steps", 35)
     n_extras = arch.get("n_extras", 0)
