@@ -32,7 +32,7 @@ def test_preset_configs() -> None:
         "baseline": {
             "n_actions": 3,
             "actions": [0, 1, 2],
-            "turn_step": 90,
+            "turn_step": 45,
         },
         "fine_turns": {
             "n_actions": 5,
@@ -42,7 +42,7 @@ def test_preset_configs() -> None:
         "speed_var": {
             "n_actions": 5,
             "actions": [2, 2, 2, 0, 1],
-            "turn_step": 90,
+            "turn_step": 45,
         },
         "fine_speed": {
             "n_actions": 7,

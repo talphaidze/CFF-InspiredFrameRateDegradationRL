@@ -37,10 +37,11 @@ high_freq_steps: 35 # unused by C v2; kept for config parity
 
 use_proprio: false
 turn_step_deg: 10
+action_preset: "fine_speed"
 
 track: false
 wandb_project: cff-rl
-log_dir: runs
+log_dir: runs/fine_speed
 checkpoint_every: 500
 
 record_video: false

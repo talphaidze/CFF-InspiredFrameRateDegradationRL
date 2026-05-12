@@ -33,10 +33,11 @@ high_freq_steps: 35 # unused by Agent B; kept for config parity across agents
 
 use_proprio: false
 turn_step_deg: 10
+action_preset: "fine_turns"
 
 track: false
 wandb_project: cff-rl
-log_dir: runs
+log_dir: runs/fine_turns
 checkpoint_every: 500
 
 record_video: false

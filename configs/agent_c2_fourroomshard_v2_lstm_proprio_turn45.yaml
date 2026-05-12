@@ -37,7 +37,7 @@ turn_step_deg: 45
 track: false
 wandb_project: cff-rl
 log_dir: runs
-checkpoint_every: 50
+checkpoint_every: 500
 
-record_video: true
+record_video: false
 video_every: 100

@@ -1,6 +1,6 @@
 # Agent B (5 Hz stroboscopic) — FourRooms LSTM with 10° turn step.
 # Same as agent_b_fourrooms_lstm.yaml + turn_step_deg: 10.
-exp_name: agent_b_fourrooms_lstm_turn10
+exp_name: agent_b_fourrooms_lstm_turn10_proprio
 seed: 42
 
 env_id: MiniWorld-FourRooms-v0
@@ -31,12 +31,13 @@ use_active_vision: false
 strobe_k: 7         # hold length — actively used by StroboscopicWrapper
 high_freq_steps: 35 # unused by Agent B; kept for config parity across agents
 
-use_proprio: false
+use_proprio: true
 turn_step_deg: 10
+action_preset: "speed_var"
 
 track: false
 wandb_project: cff-rl
-log_dir: runs
+log_dir: runs/speed_var
 checkpoint_every: 500
 
 record_video: false
