@@ -84,6 +84,12 @@ class PPOConfig:
     # FourRooms uses 90° turns by default; lower values are a learning-side
     # ablation, not a CFF claim.
     turn_step_deg: int = 90
+    # Action presets for dynamic action spaces:
+    # - "baseline": [turn_left, turn_right, forward] (3 actions)
+    # - "fine_turns": [turn_left_10°, turn_left_45°, turn_right_10°, turn_right_45°, forward] (5 actions)
+    # - "speed_var": [slow_forward, normal_forward, fast_forward, turn_left, turn_right] (5 actions)
+    # - "fine_speed": fine turns + speed variants (7 actions)
+    action_preset: str = "baseline"
 
     # Derived at runtime
     batch_size: int = field(init=False, default=0)

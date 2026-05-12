@@ -31,6 +31,7 @@ from cff_rl.envs.wrappers import (
     ActiveVisionWrapper,
     FrameStack4Wrapper,
     Grayscale64Wrapper,
+    MotionModulationWrapper,
     ProprioWrapper,
     StroboscopicWrapper,
 )
@@ -40,8 +41,9 @@ from cff_rl.envs.wrappers import (
 #   0 = turn_left, 1 = turn_right, 2 = move_forward, 3 = move_back, ...
 STATIC_ACTIONS = [0, 1, 2]
 
+# MiniWorld default action indices we care about for the static task.
 # 90-degree turns keep state transitions discrete (proposal § Method, Regime 1).
-TURN_STEP_DEG = 90
+TURN_STEP_DEG = 45
 # Fixed, moderate forward speed — the proposal specifies constant low speed to
 # remove velocity dynamics from Regime 1.
 FORWARD_STEP = 0.5
@@ -49,6 +51,55 @@ FORWARD_STEP = 0.5
 OBS_SIZE = 64
 FRAME_STACK = 8
 MAX_EPISODE_STEPS = 1000
+
+
+def _get_preset_config(preset: str) -> dict:
+    """Return action list and motion parameters for the given preset.
+    
+    Returns dict with keys:
+        - actions: list of MiniWorld action indices
+        - turn_step: turn_step_deg parameter
+        - forward_steps: dict mapping action_idx -> forward_step value
+    """
+    if preset == "baseline":
+        return {
+            "actions": [0, 1, 2],  # turn_left, turn_right, move_forward
+            "turn_step": 45,
+            "forward_steps": {2: 0.5},  # all forwards use standard speed
+        }
+    elif preset == "fine_turns":
+        # 10° and 45° turns + forward
+        # MiniWorld: 0=turn_left, 1=turn_right
+        # Actions: [left-10°, left-45°, right-10°, right-45°, forward]
+        return {
+            "actions": [0, 0, 1, 1, 2],  # left-10°, left-45°, right-10°, right-45°, forward
+            "turn_step": 10,  # will be overridden per-action via wrapper
+            "forward_steps": {4: 0.5},
+            "turn_angles": {0: 10, 1: 45, 2: 10, 3: 45},  # action_idx -> turn angle in degrees
+        }
+    elif preset == "speed_var":
+        # 3 forward speeds + turn left/right
+        # Actions: [slow_fwd, normal_fwd, fast_fwd, turn_left, turn_right]
+        return {
+            "actions": [2, 2, 2, 0, 1],  # forward (x3), left, right
+            "turn_step": 45,
+            "forward_steps": {0: 0.25, 1: 0.5, 2: 1},  # action_idx -> speed
+        }
+    elif preset == "fine_speed":
+        # Combined preset: fine turns + speed variation.
+        # Actions: [left-10°, left-45°, right-10°, right-45°, slow_fwd, normal_fwd, fast_fwd]
+        return {
+            "actions": [0, 0, 1, 1, 2, 2, 2],
+            "turn_step": 10,
+            "turn_angles": {0: 10, 1: 45, 2: 10, 3: 45},
+            "forward_steps": {4: 0.25, 5: 0.5, 6: 1},
+        }
+    else:
+        raise ValueError(
+            f"Unknown action_preset: {preset}. "
+            "Choose from: 'baseline', 'fine_turns', 'speed_var', 'fine_speed'"
+        )
+
 
 
 def make_static_env(
@@ -64,11 +115,20 @@ def make_static_env(
     frame_stack: int = FRAME_STACK,
     use_proprio: bool = False,
     turn_step_deg: int = TURN_STEP_DEG,
+    action_preset: str = "baseline",
 ) -> gym.Env:
-    """Build the Regime 1 environment for Agent A, B, C."""
+    """Build the Regime 1 environment for Agent A, B, C with configurable action presets.
+    
+    Parameters
+    ----------
+    action_preset : str
+        - "baseline": 3 actions (left, right, forward)
+        - "fine_turns": 5 actions (left-10°, left-45°, right-10°, right-45°, forward)
+        - "speed_var": 5 actions (slow_fwd, normal_fwd, fast_fwd, left, right)
+        - "fine_speed": 7 actions (fine turns + slow/normal/fast forward)
+    """
 
-    # Print the inputs to make_static_env function to ensure no bugs are there
-    print(f"make_static_env called with: {locals()}")
+    print(f"make_static_env called with: preset={action_preset}, {locals()}")
 
     n_exclusive = sum([use_stroboscopic, use_active_gating, use_active_vision])
     if n_exclusive > 1:
@@ -77,11 +137,19 @@ def make_static_env(
             "mutually exclusive — pick exactly one (or none for Agent A)."
         )
     
+    # Get action configuration for this preset
+    preset_config = _get_preset_config(action_preset)
+    base_actions = preset_config["actions"]
+    turn_step = preset_config["turn_step"]
+    forward_steps = preset_config["forward_steps"]
+    turn_angles = preset_config.get("turn_angles", None)
+    
     extra: dict = {}
     if render_mode == "rgb_array":
         # Bigger framebuffer so the recorded video isn't tiny. Doesn't affect
         # the policy obs (still OBS_SIZE x OBS_SIZE, set via obs_width/height).
         extra.update(window_width=512, window_height=512)
+    
     env = gym.make(
         env_id,
         obs_width=OBS_SIZE,
@@ -90,45 +158,62 @@ def make_static_env(
         render_mode=render_mode,
         **extra,
     )
-    # Override motion params on the unwrapped MiniWorldEnv so turns are a
-    # configurable fixed step (default 90°) and forward velocity is constant.
-    # `params.set(name, default, min, max)`.
+    
+    # Configure motion parameters on the unwrapped MiniWorld env
     inner: MiniWorldEnv = env.unwrapped  # type: ignore[assignment]
-    inner.params.set("turn_step", turn_step_deg, turn_step_deg, turn_step_deg)
-    inner.params.set("forward_step", FORWARD_STEP, FORWARD_STEP, FORWARD_STEP)
+    inner.params.set("turn_step", turn_step, turn_step, turn_step)
+    
+    # Determine which forward_step to use as default
+    # For presets with per-action modulation, use the first forward_step value
+    default_forward = FORWARD_STEP
+    if forward_steps:
+        default_forward = list(forward_steps.values())[0] if forward_steps else FORWARD_STEP
+    
+    inner.params.set("forward_step", default_forward, default_forward, default_forward)
 
-    env = ActionFilterWrapper(env, STATIC_ACTIONS)
+    # ActionFilterWrapper maps reduced action space to MiniWorld actions
+    env = ActionFilterWrapper(env, base_actions)
     env = Grayscale64Wrapper(env, size=OBS_SIZE)
+    
+    # For presets with per-action modulation, wrap after grayscale
+    if turn_angles or forward_steps:
+        env = MotionModulationWrapper(
+            env,
+            turn_angles=turn_angles,
+            forward_steps=forward_steps,
+            default_turn_step=turn_step,
+            default_forward_step=default_forward,
+        )
+    
     if use_stroboscopic:                          # Agent B
         env = StroboscopicWrapper(env, k=strobe_k)
     elif use_active_gating:                       # Agent C v1 (STOP_AND_LOOK)
         env = ActiveGatingWrapper(
             env,
-            n_base_actions=len(STATIC_ACTIONS),
+            n_base_actions=len(base_actions),
             k=strobe_k,
             high_freq_steps=high_freq_steps,
         )
     elif use_active_vision:                       # Agent C v2 (6 actions)
         env = ActiveVisionWrapper(
             env,
-            n_base_actions=len(STATIC_ACTIONS),
+            n_base_actions=len(base_actions),
             k=strobe_k,
             vision_cost=vision_cost,
         )
+    
     env = FrameStack4Wrapper(env, k=frame_stack)
     if use_proprio:
+        n_actions = len(base_actions)
         if use_active_vision:
-            n_actions = 2 * len(STATIC_ACTIONS)
+            n_actions = 2 * len(base_actions)
         elif use_active_gating:
-            n_actions = len(STATIC_ACTIONS) + 1
-        else:
-            n_actions = len(STATIC_ACTIONS)
+            n_actions = len(base_actions) + 1
         env = ProprioWrapper(env, n_actions=n_actions)
 
     if seed is not None:
         env.reset(seed=seed)
     return env
-
 if __name__ == "__main__":
     # Smoke test: random policy across a few episodes, verify obs shape.
     env = make_static_env(seed=0)

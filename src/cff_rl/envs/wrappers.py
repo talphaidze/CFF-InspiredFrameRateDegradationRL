@@ -53,6 +53,67 @@ class FrameStack4Wrapper(gym.ObservationWrapper):
 
     def _stack(self) -> np.ndarray:
         return np.stack(self._frames, axis=0)
+class MotionModulationWrapper(gym.Wrapper):
+    """Modulate turn angles or forward speeds per action.
+    
+    This wrapper allows different actions to execute with different motion
+    parameters (e.g., 10° vs 45° turns, or slow/normal/fast forward speeds).
+    
+    The wrapper modifies the MiniWorld env's params before each step, then
+    restores default values afterward.
+    """
+
+    def __init__(
+        self,
+        env: gym.Env,
+        turn_angles: dict[int, float] | None = None,
+        forward_steps: dict[int, float] | None = None,
+        default_turn_step: float = 45.0,
+        default_forward_step: float = 0.5,
+    ):
+        """
+        Parameters
+        ----------
+        turn_angles : dict[int, float] | None
+            Maps action index -> turn angle in degrees. e.g., {0: 10, 1: 45}
+        forward_steps : dict[int, float] | None
+            Maps action index -> forward_step distance. e.g., {0: 0.25, 1: 0.5, 2: 0.75}
+        """
+        super().__init__(env)
+        self.turn_angles = turn_angles or {}
+        self.forward_steps = forward_steps or {}
+        self.default_turn_step = float(default_turn_step)
+        self.default_forward_step = float(default_forward_step)
+
+    def step(self, action: int):  # type: ignore[override]
+        action = int(action)
+        inner = self.env.unwrapped
+        
+        # Apply per-action motion parameters
+        if action in self.turn_angles:
+            inner.params.set(
+                "turn_step",
+                self.turn_angles[action],
+                self.turn_angles[action],
+                self.turn_angles[action],
+            )
+        
+        if action in self.forward_steps:
+            inner.params.set(
+                "forward_step",
+                self.forward_steps[action],
+                self.forward_steps[action],
+                self.forward_steps[action],
+            )
+        
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        
+        # Restore defaults
+        inner.params.set("turn_step", self.default_turn_step, self.default_turn_step, self.default_turn_step)
+        inner.params.set("forward_step", self.default_forward_step, self.default_forward_step, self.default_forward_step)
+        
+        return obs, reward, terminated, truncated, info
+
 
 class StroboscopicWrapper(gym.ObservationWrapper):
     """Repeat each grayscale frame for k steps before refreshing it."""
