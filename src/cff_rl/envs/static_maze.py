@@ -97,7 +97,17 @@ def make_static_env(
     inner.params.set("turn_step", turn_step_deg, turn_step_deg, turn_step_deg)
     inner.params.set("forward_step", FORWARD_STEP, FORWARD_STEP, FORWARD_STEP)
 
-    env = ActionFilterWrapper(env, STATIC_ACTIONS)
+    # Agent C v1 needs an extra slot in the filtered action map that maps to a
+    # MiniWorld no-op (pickup = 4, which is a no-op in object-free envs like
+    # FourRooms). This slot is NOT exposed to the policy — ActiveGatingWrapper
+    # uses it internally as the inner-env action executed during STOP_AND_LOOK,
+    # so the env step counter still ticks but the agent stays put.
+    if use_active_gating:
+        action_map = STATIC_ACTIONS + [4]  # [turn_left, turn_right, move_forward, pickup]
+    else:
+        action_map = STATIC_ACTIONS
+
+    env = ActionFilterWrapper(env, action_map)
     env = Grayscale64Wrapper(env, size=OBS_SIZE)
     if use_stroboscopic:                          # Agent B
         env = StroboscopicWrapper(env, k=strobe_k)
@@ -107,6 +117,7 @@ def make_static_env(
             n_base_actions=len(STATIC_ACTIONS),
             k=strobe_k,
             high_freq_steps=high_freq_steps,
+            null_action=len(STATIC_ACTIONS), # Points to the no-op action added at the last of STATIC_ACTIONS
         )
     elif use_active_vision:                       # Agent C v2 (6 actions)
         env = ActiveVisionWrapper(

@@ -99,8 +99,7 @@ class ActiveGatingWrapper(gym.Wrapper):
         action == n_base_actions  →  STOP_AND_LOOK
             • Sets high-freq mode for ``high_freq_steps`` steps.
             • Passes ``null_action`` to the inner env for this single step
-              (turn_left by default — the least-disruptive option available
-              since MiniWorld has no explicit idle/no-op action).
+              (pickup action since nothing changes in env with pickup).
  
     Placement
     ---------
@@ -120,9 +119,9 @@ class ActiveGatingWrapper(gym.Wrapper):
         self,
         env: gym.Env,
         n_base_actions: int,
-        k: int = 7,
-        high_freq_steps: int = 35,
-        null_action: int = 0,
+        k: int,
+        high_freq_steps: int,
+        null_action: int,
     ):
         """
         Parameters
@@ -135,7 +134,7 @@ class ActiveGatingWrapper(gym.Wrapper):
         high_freq_steps: number of consecutive fresh-obs steps after a
                          STOP_AND_LOOK (default 35 → 1 second at 35 Hz).
         null_action    : inner-env action executed when STOP_AND_LOOK is
-                         chosen (default 0 = turn_left).
+                         chosen.
         """
         super().__init__(env)
         if not isinstance(env.observation_space, spaces.Box):
