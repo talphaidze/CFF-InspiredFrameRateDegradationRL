@@ -69,7 +69,7 @@ def make_static_env(
     """Build the Regime 1 environment for Agent A, B, C."""
 
     # Print the inputs to make_static_env function to ensure no bugs are there
-    print(f"make_static_env called with: {locals()}")
+    print(f"make_static_env called with: {locals()}, forward_step={FORWARD_STEP}")
 
     n_exclusive = sum([use_stroboscopic, use_active_gating, use_active_vision])
     if n_exclusive > 1:
