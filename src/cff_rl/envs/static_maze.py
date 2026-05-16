@@ -48,7 +48,8 @@ FORWARD_STEP = 0.5
 
 OBS_SIZE = 64
 FRAME_STACK = 8
-MAX_EPISODE_STEPS = 1000
+MAX_EPISODE_STEPS = {"MiniWorld-FourRooms-v0": 500,
+                     "MiniWorld-FourRoomsHard-v0": 1000}
 
 
 def make_static_env(
@@ -86,7 +87,7 @@ def make_static_env(
         env_id,
         obs_width=OBS_SIZE,
         obs_height=OBS_SIZE,
-        max_episode_steps=MAX_EPISODE_STEPS,
+        max_episode_steps=MAX_EPISODE_STEPS['env_id'],
         render_mode=render_mode,
         **extra,
     )
