@@ -32,7 +32,7 @@ from cff_rl.envs.wrappers import VideoCompositeWrapper
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--checkpoint", type=Path, required=True)
-    p.add_argument("--env-id", type=str, default="MiniWorld-FourRooms-v0")
+    p.add_argument("--env-id", type=str, required=True)
     p.add_argument("--episodes", type=int, default=100)
     p.add_argument(
         "--seeds",
