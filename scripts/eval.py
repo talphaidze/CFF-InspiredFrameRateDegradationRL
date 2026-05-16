@@ -77,7 +77,8 @@ def run_seed(
     vision_cost: float = 0.01,
     strobe_k: int = 7,
     high_freq_steps: int = 35,
-    turn_step_deg: int = 90,
+    turn_step_deg: int = 45,
+    action_preset: str = "baseline",
     video_dir: Path | None = None,
 ) -> dict:
     common = dict(
@@ -92,6 +93,7 @@ def run_seed(
         strobe_k=strobe_k,
         high_freq_steps=high_freq_steps,
         turn_step_deg=turn_step_deg,
+        action_preset=action_preset,
     )
     if video_dir is not None:
         env = make_static_env(render_mode="rgb_array", **common)
@@ -190,6 +192,8 @@ def main() -> None:
     high_freq_steps = arch.get("high_freq_steps", 35)
     n_extras = arch.get("n_extras", 0)
     turn_step_deg = arch.get("turn_step_deg", 90)
+    cfg = ckpt.get("config", {})
+    action_preset = arch.get("action_preset", cfg.get("action_preset", "baseline"))
     vision_cost = arch.get("vision_cost", 0.01)
 
     probe = make_static_env(
@@ -204,6 +208,7 @@ def main() -> None:
         strobe_k=strobe_k,
         high_freq_steps=high_freq_steps,
         turn_step_deg=turn_step_deg,
+        action_preset=action_preset,
     )
     if use_proprio:
         obs_shape = probe.observation_space["image"].shape
@@ -236,7 +241,8 @@ def main() -> None:
     print(
         f"agent type: {agent_type}"
         f"agent: {'recurrent (LSTM)' if recurrent else 'feed-forward'}, "
-        f"frame_stack={frame_stack}, use_proprio={use_proprio}, turn={turn_step_deg}°"
+        f"frame_stack={frame_stack}, use_proprio={use_proprio}, "
+        f"turn={turn_step_deg}°, action_preset={action_preset}"
     )
 
     video_dir = None
@@ -261,6 +267,7 @@ def main() -> None:
             strobe_k=strobe_k,
             high_freq_steps=high_freq_steps,
             turn_step_deg=turn_step_deg,
+            action_preset=action_preset,
             video_dir=video_dir if i == 0 else None,
         )
         for i, s in enumerate(seeds)

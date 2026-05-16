@@ -7,16 +7,40 @@
 #SBATCH --mem=16G
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
-#SBATCH --output=cff_eval_%j.out
-#SBATCH --error=cff_eval_%j.err
+#SBATCH --output=cff_eval_mul_%j.out
+#SBATCH --error=cff_eval_mul_%j.err
 
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-.}"
 
-TARGET="${1:?Usage: sbatch submit_eval.sh <checkpoint|runs_dir> [episodes] [seed1 seed2 ...]}"
+TARGET="${1:?Usage: sbatch submit_eval_multiple.sh <checkpoint|runs_dir> [episodes] [seed1 seed2 ...] [--env-id ENV_ID] [--record-video]}"
 EPISODES="${2:-50}"
 shift 2 || true
-SEEDS=("$@")
+SEEDS=()
+RECORD_VIDEO=false
+ENV_ID="MiniWorld-FourRooms-v0"
+
+while (($#)); do
+  case "$1" in
+    --env-id)
+      ENV_ID="${2:?--env-id requires a value}"
+      shift 2
+      ;;
+    --record-video)
+      RECORD_VIDEO=true
+      shift
+      ;;
+    --)
+      shift
+      SEEDS+=("$@")
+      break
+      ;;
+    *)
+      SEEDS+=("$1")
+      shift
+      ;;
+  esac
+done
 
 export PYTHONUNBUFFERED=1
 
@@ -37,6 +61,20 @@ nvidia-smi || true
 
 export PYGLET_HEADLESS=true
 
+eval_args=(--episodes "$EPISODES")
+
+if [[ -n "$ENV_ID" ]]; then
+  eval_args+=(--env-id "$ENV_ID")
+fi
+
+if [[ ${#SEEDS[@]} -gt 0 ]]; then
+  eval_args+=(--seeds "${SEEDS[@]}")
+fi
+
+if [[ "$RECORD_VIDEO" == true ]]; then
+  eval_args+=(--record-video)
+fi
+
 if [[ -d "$TARGET" ]]; then
   mapfile -t CHECKPOINTS < <(find "$TARGET" -type f -name 'ckpt_000732.pt' | sort)
   if [[ ${#CHECKPOINTS[@]} -eq 0 ]]; then
@@ -50,6 +88,7 @@ if [[ -d "$TARGET" ]]; then
 
   echo "RUNS_ROOT=$TARGET"
   echo "EPISODES=$EPISODES"
+  echo "ENV_ID=$ENV_ID"
   echo "SEEDS=${SEEDS[*]}"
   printf 'CHECKPOINTS_FOUND=%s\n' "${CHECKPOINTS[@]}"
 
@@ -59,21 +98,14 @@ if [[ -d "$TARGET" ]]; then
     echo "=========================================="
     python scripts/eval.py \
       --checkpoint "$checkpoint" \
-      --episodes "$EPISODES" \
-      --seeds "${SEEDS[@]}"
+      "${eval_args[@]}"
   done
 else
   CHECKPOINT="$TARGET"
   echo "CHECKPOINT=$CHECKPOINT"
+  echo "ENV_ID=$ENV_ID"
 
-  if [[ ${#SEEDS[@]} -gt 0 ]]; then
-    python scripts/eval.py \
-      --checkpoint "$CHECKPOINT" \
-      --episodes "$EPISODES" \
-      --seeds "${SEEDS[@]}"
-  else
-    python scripts/eval.py \
-      --checkpoint "$CHECKPOINT" \
-      --episodes "$EPISODES"
-  fi
+  python scripts/eval.py \
+    --checkpoint "$CHECKPOINT" \
+    "${eval_args[@]}"
 fi

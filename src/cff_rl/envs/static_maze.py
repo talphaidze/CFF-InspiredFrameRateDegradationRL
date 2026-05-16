@@ -61,7 +61,19 @@ def _get_preset_config(preset: str) -> dict:
         - turn_step: turn_step_deg parameter
         - forward_steps: dict mapping action_idx -> forward_step value
     """
-    if preset == "baseline":
+    if preset == "baseline_10":
+        return {
+            "actions": [0, 1, 2],  # turn_left, turn_right, move_forward
+            "turn_step": 10,
+            "forward_steps": {2: 0.5},  # all forwards use standard speed
+        }
+    elif preset == "baseline_1":
+        return {
+            "actions": [0, 1, 2],  # turn_left, turn_right, move_forward
+            "turn_step": 1,
+            "forward_steps": {2: 0.5},  # all forwards use standard speed
+        }
+    elif preset == "baseline_45":
         return {
             "actions": [0, 1, 2],  # turn_left, turn_right, move_forward
             "turn_step": 45,
@@ -97,7 +109,7 @@ def _get_preset_config(preset: str) -> dict:
     else:
         raise ValueError(
             f"Unknown action_preset: {preset}. "
-            "Choose from: 'baseline', 'fine_turns', 'speed_var', 'fine_speed'"
+            "Choose from: 'baseline_1', 'baseline_10', 'baseline_45', 'fine_turns', 'speed_var', 'fine_speed'"
         )
 
 
@@ -115,14 +127,15 @@ def make_static_env(
     frame_stack: int = FRAME_STACK,
     use_proprio: bool = False,
     turn_step_deg: int = TURN_STEP_DEG,
-    action_preset: str = "baseline",
+    action_preset: str = "baseline_45",
 ) -> gym.Env:
     """Build the Regime 1 environment for Agent A, B, C with configurable action presets.
     
     Parameters
     ----------
     action_preset : str
-        - "baseline": 3 actions (left, right, forward)
+        - "baseline_10": 3 actions (left, right, forward)
+        - "baseline_45": 3 actions (left, right, forward)
         - "fine_turns": 5 actions (left-10°, left-45°, right-10°, right-45°, forward)
         - "speed_var": 5 actions (slow_fwd, normal_fwd, fast_fwd, left, right)
         - "fine_speed": 7 actions (fine turns + slow/normal/fast forward)
