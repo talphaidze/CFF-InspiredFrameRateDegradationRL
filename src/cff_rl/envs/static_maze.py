@@ -87,7 +87,7 @@ def make_static_env(
         env_id,
         obs_width=OBS_SIZE,
         obs_height=OBS_SIZE,
-        max_episode_steps=MAX_EPISODE_STEPS['env_id'],
+        max_episode_steps=MAX_EPISODE_STEPS[env_id],
         render_mode=render_mode,
         **extra,
     )

@@ -1,0 +1,89 @@
+{
+  "checkpoint": "runs/agent_a_fourrooms_lstm_turn45__42__1778419896/ckpt_000732.pt",
+  "env_id": "MiniWorld-FourRooms-v0",
+  "seeds": [
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "episodes_per_seed": 50,
+  "deterministic": false,
+  "per_seed": [
+    {
+      "seed": 1,
+      "episodes": 50,
+      "success_rate": 1.0,
+      "mean_return": 0.968992,
+      "mean_length": 38.76,
+      "mean_reversals": 1.5,
+      "mean_sal_per_episode": 0.0,
+      "mean_highfreq_per_episode": 0.0
+    },
+    {
+      "seed": 2,
+      "episodes": 50,
+      "success_rate": 1.0,
+      "mean_return": 0.9727039999999999,
+      "mean_length": 34.12,
+      "mean_reversals": 1.38,
+      "mean_sal_per_episode": 0.0,
+      "mean_highfreq_per_episode": 0.0
+    },
+    {
+      "seed": 3,
+      "episodes": 50,
+      "success_rate": 0.98,
+      "mean_return": 0.9541439999999999,
+      "mean_length": 37.32,
+      "mean_reversals": 2.04,
+      "mean_sal_per_episode": 0.0,
+      "mean_highfreq_per_episode": 0.0
+    },
+    {
+      "seed": 4,
+      "episodes": 50,
+      "success_rate": 1.0,
+      "mean_return": 0.9742559999999999,
+      "mean_length": 32.18,
+      "mean_reversals": 1.12,
+      "mean_sal_per_episode": 0.0,
+      "mean_highfreq_per_episode": 0.0
+    },
+    {
+      "seed": 5,
+      "episodes": 50,
+      "success_rate": 1.0,
+      "mean_return": 0.974128,
+      "mean_length": 32.34,
+      "mean_reversals": 1.18,
+      "mean_sal_per_episode": 0.0,
+      "mean_highfreq_per_episode": 0.0
+    }
+  ],
+  "success_rate": [
+    0.9960000000000001,
+    0.008000000000000007
+  ],
+  "mean_return": [
+    0.9688448,
+    0.007592389621193074
+  ],
+  "mean_length": [
+    34.944,
+    2.657318949618204
+  ],
+  "mean_reversals": [
+    1.444,
+    0.32775600680994393
+  ],
+  "mean_sal_per_episode": [
+    0.0,
+    0.0
+  ],
+  "mean_highfreq_per_episode": [
+    0.0,
+    0.0
+  ]
+}
