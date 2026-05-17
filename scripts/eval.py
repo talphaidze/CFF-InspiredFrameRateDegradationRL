@@ -114,10 +114,18 @@ def run_seed(
             return img, ext
         return torch.as_tensor(o, dtype=torch.float32).unsqueeze(0).to(device), None
 
+    # Underlying MiniWorldEnv — used to read agent position for the collision
+    # metric. The action_map (STATIC_ACTIONS) puts move_forward at index 2 of
+    # the agent's action space.
+    inner = env.unwrapped
+    MOVE_FORWARD_IDX = 2
+
     successes, returns, lengths, reversals, sal_counts, hf_counts = [], [], [], [], [], []
+    collisions_list = []
     for ep in range(episodes):
         obs, _ = env.reset(seed=seed + ep)
         ep_ret, ep_len, ep_acts, ep_sal, ep_hf = 0.0, 0, [], 0, 0
+        ep_collisions = 0
         terminated = truncated = False
         if recurrent:
             lstm_state = agent.initial_state(1, device)
@@ -143,7 +151,13 @@ def run_seed(
                     else:
                         a, _, _, _ = agent.get_action_and_value(x, ext)
                         action = int(a.item())
+            pos_before = inner.agent.pos.copy()
             obs, r, terminated, truncated, info = env.step(action)
+            pos_after = inner.agent.pos.copy()
+            # Collision: agent issued move_forward but did not displace. Catches
+            # blocks against walls, pillars, and (moving) distractor balls.
+            if action == MOVE_FORWARD_IDX and np.linalg.norm(pos_after - pos_before) < 1e-6:
+                ep_collisions += 1
             ep_ret += float(r)
             ep_len += 1
             ep_acts.append(action)
@@ -157,6 +171,7 @@ def run_seed(
         reversals.append(_count_reversals(ep_acts))
         sal_counts.append(ep_sal)
         hf_counts.append(ep_hf)
+        collisions_list.append(ep_collisions)
     env.close()
     return {
         "seed": seed,
@@ -165,6 +180,7 @@ def run_seed(
         "mean_return": float(np.mean(returns)),
         "mean_length": float(np.mean(lengths)),
         "mean_reversals": float(np.mean(reversals)),
+        "mean_collisions": float(np.mean(collisions_list)),
         "mean_sal_per_episode": float(np.mean(sal_counts)),
         "mean_highfreq_per_episode": float(np.mean(hf_counts)),
     }
@@ -281,6 +297,7 @@ def main() -> None:
         "mean_return": agg("mean_return"),
         "mean_length": agg("mean_length"),
         "mean_reversals": agg("mean_reversals"),
+        "mean_collisions": agg("mean_collisions"),
         "mean_sal_per_episode": agg("mean_sal_per_episode"),
         "mean_highfreq_per_episode": agg("mean_highfreq_per_episode"),
     }
@@ -292,7 +309,7 @@ def main() -> None:
     print(f"checkpoint: {args.checkpoint}")
     print(f"seeds: {seeds}  episodes/seed: {args.episodes}")
     print(f"{'metric':<22} {'mean':>10} {'std':>10}")
-    metrics = ["success_rate", "mean_return", "mean_length", "mean_reversals"]
+    metrics = ["success_rate", "mean_return", "mean_length", "mean_reversals", "mean_collisions"]
     if use_active_gating:
         metrics.append("mean_sal_per_episode")
     if use_active_vision:

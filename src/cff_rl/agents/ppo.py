@@ -84,6 +84,9 @@ class PPOConfig:
     # FourRooms uses 90° turns by default; lower values are a learning-side
     # ablation, not a CFF claim.
     turn_step_deg: int = 90
+    # Per-episode truncation cap. None → use make_static_env's default
+    # (MAX_EPISODE_STEPS in static_maze.py).
+    max_episode_steps: int | None = None
 
     # Derived at runtime
     batch_size: int = field(init=False, default=0)

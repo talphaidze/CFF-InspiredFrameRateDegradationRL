@@ -13,3 +13,15 @@ register(
     entry_point="cff_rl.envs.fourrooms_hard:FourRoomsHard",
     kwargs={"goal_size": 0.6},
 )
+
+register(
+    id="MiniWorld-FourRoomsHardDynamic-v0",
+    entry_point="cff_rl.envs.fourrooms_hard_dynamic:FourRoomsHardDynamic",
+    kwargs={"num_distractors": 4},
+)
+
+register(
+    id="MiniWorld-FourRoomsHardDynamic2d-v0",
+    entry_point="cff_rl.envs.fourrooms_hard_dynamic:FourRoomsHardDynamic",
+    kwargs={"num_distractors": 2},
+)
