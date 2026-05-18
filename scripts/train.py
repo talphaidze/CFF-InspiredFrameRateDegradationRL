@@ -69,6 +69,7 @@ def main() -> None:
             use_proprio=cfg.use_proprio,
             turn_step_deg=cfg.turn_step_deg,
             max_episode_steps=cfg.max_episode_steps,
+            distance_reward=cfg.distance_reward,
         )
         if cfg.record_video and env_idx == 0:
             env = make_static_env(render_mode="rgb_array", **common)

@@ -16,13 +16,25 @@ from cff_rl.envs.fourrooms_hard import FourRoomsHard
 class FourRoomsHardDynamic(FourRoomsHard):
     """FourRoomsHard with constant-velocity bouncing distractor balls."""
 
-    def __init__(self, distractor_speed: float = 0.1, **kwargs):
+    def __init__(
+        self,
+        distractor_speed: float = 0.1,
+        distance_reward: float = 0.0,
+        **kwargs,
+    ):
         self.distractor_speed = float(distractor_speed)
+        # Dense reward shaping: per-step reward of distance_reward * (d_prev -
+        # d_curr) in Euclidean distance to the goal (xz-plane). Encourages
+        # closing distance without overriding sparse goal reward.
+        self.distance_reward = float(distance_reward)
         self._distractors: list = []
         self._distractor_vels: list = []
         super().__init__(**kwargs)
         utils.EzPickle.__init__(
-            self, distractor_speed=distractor_speed, **kwargs
+            self,
+            distractor_speed=distractor_speed,
+            distance_reward=distance_reward,
+            **kwargs,
         )
 
     def _gen_world(self):
@@ -73,4 +85,13 @@ class FourRoomsHardDynamic(FourRoomsHard):
 
     def step(self, action):
         self._move_distractors()
-        return super().step(action)
+        d_before = (
+            float(np.linalg.norm((self.agent.pos - self.box.pos)[[0, 2]]))
+            if self.distance_reward > 0
+            else 0.0
+        )
+        obs, reward, terminated, truncated, info = super().step(action)
+        if self.distance_reward > 0:
+            d_after = float(np.linalg.norm((self.agent.pos - self.box.pos)[[0, 2]]))
+            reward += self.distance_reward * (d_before - d_after)
+        return obs, reward, terminated, truncated, info

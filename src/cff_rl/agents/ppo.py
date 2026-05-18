@@ -87,6 +87,9 @@ class PPOConfig:
     # Per-episode truncation cap. None → use make_static_env's default
     # (MAX_EPISODE_STEPS in static_maze.py).
     max_episode_steps: int | None = None
+    # Dense reward shaping (distance-to-goal). None → off. See
+    # FourRoomsHardDynamic for semantics.
+    distance_reward: float | None = None
 
     # Derived at runtime
     batch_size: int = field(init=False, default=0)
