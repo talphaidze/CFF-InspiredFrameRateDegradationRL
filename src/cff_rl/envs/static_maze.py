@@ -65,6 +65,8 @@ def make_static_env(
     frame_stack: int = FRAME_STACK,
     use_proprio: bool = False,
     turn_step_deg: int = TURN_STEP_DEG,
+    max_episode_steps: int | None = None,
+    distance_reward: float | None = None,
 ) -> gym.Env:
     """Build the Regime 1 environment for Agent A, B, C."""
 
@@ -79,6 +81,8 @@ def make_static_env(
         )
     
     extra: dict = {}
+    if distance_reward is not None:
+        extra["distance_reward"] = distance_reward
     if render_mode == "rgb_array":
         # Bigger framebuffer so the recorded video isn't tiny. Doesn't affect
         # the policy obs (still OBS_SIZE x OBS_SIZE, set via obs_width/height).
@@ -87,7 +91,7 @@ def make_static_env(
         env_id,
         obs_width=OBS_SIZE,
         obs_height=OBS_SIZE,
-        max_episode_steps=MAX_EPISODE_STEPS[env_id],
+        max_episode_steps=max_episode_steps if max_episode_steps is not None else MAX_EPISODE_STEPS,
         render_mode=render_mode,
         **extra,
     )
@@ -97,6 +101,11 @@ def make_static_env(
     inner: MiniWorldEnv = env.unwrapped  # type: ignore[assignment]
     inner.params.set("turn_step", turn_step_deg, turn_step_deg, turn_step_deg)
     inner.params.set("forward_step", FORWARD_STEP, FORWARD_STEP, FORWARD_STEP)
+    # MiniWorldEnv tracks its own step counter against an internal
+    # max_episode_steps (baked in by the env's __init__). Override it so
+    # truncation actually honors the requested cap.
+    if max_episode_steps is not None:
+        inner.max_episode_steps = max_episode_steps
 
     # Agent C v1 needs an extra slot in the filtered action map that maps to a
     # MiniWorld no-op (pickup = 4, which is a no-op in object-free envs like
