@@ -50,9 +50,15 @@ def main() -> None:
         cfg.record_video = True
 
     import time
+    import shutil
 
     run_name = f"{cfg.exp_name}__{cfg.seed}__{int(time.time())}"
-    video_dir = Path(cfg.log_dir) / run_name / "videos"
+    run_dir = Path(cfg.log_dir) / run_name
+    run_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(args.config, run_dir / args.config.name)
+    print(f"Config saved to {run_dir / args.config.name}")
+
+    video_dir = run_dir / "videos"
     every = max(1, cfg.video_every)
 
     def env_fn(seed: int, env_idx: int = 0):
