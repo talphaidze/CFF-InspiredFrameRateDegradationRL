@@ -76,8 +76,11 @@ def run_seed(
     use_active_vision: bool = False,
     vision_cost: float = 0.01,
     strobe_k: int = 7,
+    hf_strobe_k: int = 1,
     high_freq_steps: int = 35,
+    use_depth: bool = False,
     turn_step_deg: int = 90,
+    use_fresh_gate: bool = False,
     video_dir: Path | None = None,
 ) -> dict:
     common = dict(
@@ -90,7 +93,9 @@ def run_seed(
         use_active_vision=use_active_vision,
         vision_cost=vision_cost,
         strobe_k=strobe_k,
+        hf_strobe_k=hf_strobe_k,
         high_freq_steps=high_freq_steps,
+        use_depth=use_depth,
         turn_step_deg=turn_step_deg,
     )
     if video_dir is not None:
@@ -130,18 +135,22 @@ def run_seed(
         if recurrent:
             lstm_state = agent.initial_state(1, device)
             done_t = torch.zeros(1, device=device)
+        # gate fully applied at eval; first obs treated as fresh
+        is_fresh = torch.ones(1, 1, dtype=torch.float32, device=device) if use_fresh_gate else None
         while not (terminated or truncated):
             x, ext = _split(obs)
             with torch.no_grad():
                 if recurrent:
                     if deterministic:
                         h, lstm_state = agent.get_states(
-                            x, lstm_state, done_t, extras=ext
+                            x, lstm_state, done_t, extras=ext,
+                            is_fresh=is_fresh, gate_alpha=1.0,
                         )
                         action = int(agent.actor(h).argmax(dim=-1).item())
                     else:
                         a, _, _, _, lstm_state = agent.get_action_and_value(
-                            x, lstm_state, done_t, extras=ext
+                            x, lstm_state, done_t, extras=ext,
+                            is_fresh=is_fresh, gate_alpha=1.0,
                         )
                         action = int(a.item())
                 else:
@@ -165,6 +174,10 @@ def run_seed(
                 ep_sal += int(info["stop_and_look"])
             if use_active_vision:
                 ep_hf += int(info["high_freq"])
+                if use_fresh_gate:
+                    is_fresh = torch.tensor(
+                        [[float(info["high_freq"])]], dtype=torch.float32, device=device
+                    )
         successes.append(1.0 if terminated else 0.0)
         returns.append(ep_ret)
         lengths.append(ep_len)
@@ -203,7 +216,10 @@ def main() -> None:
     use_active_gating = arch.get("use_active_gating", False) or args.use_active_gating
     use_active_vision = arch.get("use_active_vision", False) or args.use_active_vision
     strobe_k = arch.get("strobe_k", 7)
+    hf_strobe_k = arch.get("hf_strobe_k", 1)
     high_freq_steps = arch.get("high_freq_steps", 35)
+    use_depth = arch.get("use_depth", False)
+    use_fresh_gate = arch.get("use_fresh_gate", False)
     n_extras = arch.get("n_extras", 0)
     turn_step_deg = arch.get("turn_step_deg", 90)
     vision_cost = arch.get("vision_cost", 0.01)
@@ -218,7 +234,9 @@ def main() -> None:
         use_active_vision=use_active_vision,
         vision_cost=vision_cost,
         strobe_k=strobe_k,
+        hf_strobe_k=hf_strobe_k,
         high_freq_steps=high_freq_steps,
+        use_depth=use_depth,
         turn_step_deg=turn_step_deg,
     )
     if use_proprio:
@@ -235,6 +253,7 @@ def main() -> None:
             lstm_hidden_size=lstm_hidden_size,
             lstm_num_layers=lstm_num_layers,
             n_extras=n_extras,
+            use_fresh_gate=use_fresh_gate,
         ).to(device)
     else:
         agent = NatureCNN(
@@ -275,8 +294,11 @@ def main() -> None:
             use_active_vision=use_active_vision,
             vision_cost=vision_cost,
             strobe_k=strobe_k,
+            hf_strobe_k=hf_strobe_k,
             high_freq_steps=high_freq_steps,
+            use_depth=use_depth,
             turn_step_deg=turn_step_deg,
+            use_fresh_gate=use_fresh_gate,
             video_dir=video_dir if i == 0 else None,
         )
         for i, s in enumerate(seeds)

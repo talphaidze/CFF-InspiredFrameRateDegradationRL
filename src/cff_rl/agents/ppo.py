@@ -78,9 +78,20 @@ class PPOConfig:
     # Mutually exclusive with use_stroboscopic.
     use_active_gating: bool = False
     high_freq_steps: int = 35
-    # Agent C v2: 6-action active vision (3 moves × {5 Hz, 35 Hz}).
+    # Agent C v2: 6-action active vision (3 moves × {LF Hz, HF Hz}).
     use_active_vision: bool = False
     vision_cost: float = 0.01  # reward penalty per high-freq step
+    hf_strobe_k: int = 1       # hold length for HF actions (1=35Hz, 2=~17Hz, 3=~12Hz)
+    use_depth: bool = False    # add depth map as 2nd observation channel
+    # Scheduled soft→hard CNN embedding gate (requires use_active_vision=True).
+    # Phase 1 (0–gate_warmup_start): gate_alpha=0, ent_coef=ent_coef_phase1.
+    #   vision_cost is fixed at cfg.vision_cost throughout both phases.
+    # Phase 2 (gate_warmup_start–gate_warmup_end): gate_alpha 0→1,
+    #   ent_coef anneals from ent_coef_phase1 → cfg.ent_coef.
+    use_fresh_gate: bool = False
+    gate_warmup_start: int = 2_000_000
+    gate_warmup_end: int = 6_000_000
+    ent_coef_phase1: float = 0.02  # entropy coef during Phase 1 (high, for exploration)
     # FourRooms uses 90° turns by default; lower values are a learning-side
     # ablation, not a CFF claim.
     turn_step_deg: int = 90
@@ -510,7 +521,9 @@ def train(
                         "use_active_vision": cfg.use_active_vision,
                         "vision_cost": cfg.vision_cost,
                         "strobe_k": cfg.strobe_k,
+                        "hf_strobe_k": cfg.hf_strobe_k,
                         "high_freq_steps": cfg.high_freq_steps,
+                        "use_depth": cfg.use_depth,
                         "n_extras": n_extras,
                         "turn_step_deg": cfg.turn_step_deg,
                     },
