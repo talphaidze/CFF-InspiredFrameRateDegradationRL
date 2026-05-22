@@ -286,7 +286,7 @@ class ActiveVisionWrapper(gym.Wrapper):
                          (default 7 → ~5 Hz at 35 Hz physics tick).
         hf_strobe_k    : hold length for high-freq actions (default 1 → 35 Hz).
                          Set to 2 → ~17.5 Hz, 3 → ~11.7 Hz, 7 → ~5 Hz.
-        vision_cost    : reward penalty per high-freq step (default 0.01).
+        vision_cost    : reward penalty applied every high-freq step (default 0.01).
         """
         super().__init__(env)
         if not isinstance(env.observation_space, spaces.Box):
@@ -321,6 +321,8 @@ class ActiveVisionWrapper(gym.Wrapper):
 
         obs, reward, terminated, truncated, info = self.env.step(inner_action)
 
+        # Per-step HF penalty normalised by max episode length so the total
+        # ceiling equals vision_cost regardless of how long the episode runs.
         if high_freq:
             reward -= self.vision_cost
 
