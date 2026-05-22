@@ -31,6 +31,7 @@ from cff_rl.envs.wrappers import (
     ActiveVisionWrapper,
     FrameStack4Wrapper,
     Grayscale64Wrapper,
+    GrayscaleDepth64Wrapper,
     ProprioWrapper,
     StroboscopicWrapper,
 )
@@ -61,9 +62,11 @@ def make_static_env(
     use_active_vision: bool = False,
     vision_cost: float = 0.01,
     strobe_k: int = 7,
+    hf_strobe_k: int = 1,
     high_freq_steps: int = 35,
     frame_stack: int = FRAME_STACK,
     use_proprio: bool = False,
+    use_depth: bool = False,
     turn_step_deg: int = TURN_STEP_DEG,
     max_episode_steps: int | None = None,
     distance_reward: float | None = None,
@@ -91,7 +94,7 @@ def make_static_env(
         env_id,
         obs_width=OBS_SIZE,
         obs_height=OBS_SIZE,
-        max_episode_steps=max_episode_steps if max_episode_steps is not None else MAX_EPISODE_STEPS,
+        max_episode_steps=max_episode_steps if max_episode_steps is not None else MAX_EPISODE_STEPS.get(env_id),
         render_mode=render_mode,
         **extra,
     )
@@ -118,7 +121,10 @@ def make_static_env(
         action_map = STATIC_ACTIONS
 
     env = ActionFilterWrapper(env, action_map)
-    env = Grayscale64Wrapper(env, size=OBS_SIZE)
+    if use_depth:
+        env = GrayscaleDepth64Wrapper(env, size=OBS_SIZE)
+    else:
+        env = Grayscale64Wrapper(env, size=OBS_SIZE)
     if use_stroboscopic:                          # Agent B
         env = StroboscopicWrapper(env, k=strobe_k)
     elif use_active_gating:                       # Agent C v1 (STOP_AND_LOOK)
@@ -134,6 +140,7 @@ def make_static_env(
             env,
             n_base_actions=len(STATIC_ACTIONS),
             k=strobe_k,
+            hf_strobe_k=hf_strobe_k,
             vision_cost=vision_cost,
         )
     env = FrameStack4Wrapper(env, k=frame_stack)
@@ -144,7 +151,12 @@ def make_static_env(
             n_actions = len(STATIC_ACTIONS) + 1
         else:
             n_actions = len(STATIC_ACTIONS)
-        env = ProprioWrapper(env, n_actions=n_actions)
+        env = ProprioWrapper(
+            env,
+            n_actions=n_actions,
+            use_perception_extras=use_active_vision,
+            n_base_actions=len(STATIC_ACTIONS) if use_active_vision else None,
+        )
 
     if seed is not None:
         env.reset(seed=seed)

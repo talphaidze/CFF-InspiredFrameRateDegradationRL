@@ -28,6 +28,7 @@ from torch.utils.tensorboard import SummaryWriter
 import gymnasium as gym
 
 from cff_rl.agents.ppo import PPOConfig, _count_reversals, layer_init
+from cff_rl.envs.wrappers import ActiveVisionWrapper
 
 
 class RecurrentNatureCNN(nn.Module):
@@ -40,9 +41,11 @@ class RecurrentNatureCNN(nn.Module):
         lstm_hidden_size: int = 256,
         lstm_num_layers: int = 1,
         n_extras: int = 0,
+        use_fresh_gate: bool = False,
     ):
         super().__init__()
         self.n_extras = int(n_extras)
+        self.use_fresh_gate = use_fresh_gate
         self.network = nn.Sequential(
             layer_init(nn.Conv2d(in_channels, 32, 8, stride=4)),
             nn.ReLU(),
@@ -61,7 +64,8 @@ class RecurrentNatureCNN(nn.Module):
         )
         self.lstm_hidden_size = lstm_hidden_size
         self.lstm_num_layers = lstm_num_layers
-        lstm_input_dim = 512 + self.n_extras
+        # +1 for the is_fresh scalar always concatenated when gate is active
+        lstm_input_dim = 512 + self.n_extras + (1 if use_fresh_gate else 0)
         self.lstm = nn.LSTM(lstm_input_dim, lstm_hidden_size, num_layers=lstm_num_layers)
         for name, param in self.lstm.named_parameters():
             if "bias" in name:
@@ -88,13 +92,21 @@ class RecurrentNatureCNN(nn.Module):
         lstm_state: tuple[torch.Tensor, torch.Tensor],
         done: torch.Tensor,
         extras: torch.Tensor | None = None,
+        is_fresh: torch.Tensor | None = None,
+        gate_alpha: float = 0.0,
     ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
-        feats = self.encode(x)
+        feats = self.encode(x)  # (T*N, 512)
+        if self.use_fresh_gate and is_fresh is not None:
+            # is_fresh: (T*N, 1) float — 1 if HF frame, 0 if stale LF frame.
+            # Phase 1 (alpha=0): gate is a no-op, is_fresh appended for LSTM.
+            # Phase 2 (alpha→1): CNN embedding is progressively zeroed for stale frames.
+            gated = gate_alpha * (feats * is_fresh) + (1.0 - gate_alpha) * feats
+            feats = torch.cat([gated, is_fresh], dim=1)  # (T*N, 513)
         if self.n_extras > 0:
             assert extras is not None, "extras required when n_extras > 0"
             feats = torch.cat([feats, extras], dim=1)
         n_envs = lstm_state[0].shape[1]
-        feats = feats.reshape((-1, n_envs, feats.shape[1]))  # (T, N, 512+n_extras)
+        feats = feats.reshape((-1, n_envs, feats.shape[1]))  # (T, N, lstm_input_dim)
         done = done.reshape((-1, n_envs))  # (T, N)
         outputs: list[torch.Tensor] = []
         for h_t, d_t in zip(feats, done):
@@ -111,8 +123,10 @@ class RecurrentNatureCNN(nn.Module):
         lstm_state: tuple[torch.Tensor, torch.Tensor],
         done: torch.Tensor,
         extras: torch.Tensor | None = None,
+        is_fresh: torch.Tensor | None = None,
+        gate_alpha: float = 0.0,
     ) -> torch.Tensor:
-        h, _ = self.get_states(x, lstm_state, done, extras)
+        h, _ = self.get_states(x, lstm_state, done, extras, is_fresh, gate_alpha)
         return self.critic(h)
 
     def get_action_and_value(
@@ -122,8 +136,10 @@ class RecurrentNatureCNN(nn.Module):
         done: torch.Tensor,
         action: torch.Tensor | None = None,
         extras: torch.Tensor | None = None,
+        is_fresh: torch.Tensor | None = None,
+        gate_alpha: float = 0.0,
     ):
-        h, lstm_state = self.get_states(x, lstm_state, done, extras)
+        h, lstm_state = self.get_states(x, lstm_state, done, extras, is_fresh, gate_alpha)
         logits = self.actor(h)
         dist = Categorical(logits=logits)
         if action is None:
@@ -135,6 +151,17 @@ class RecurrentNatureCNN(nn.Module):
             self.critic(h),
             lstm_state,
         )
+
+
+def _set_env_vision_cost(envs: gym.vector.SyncVectorEnv, cost: float) -> None:
+    """Traverse each env's wrapper stack and update ActiveVisionWrapper.vision_cost."""
+    for env in envs.envs:
+        e = env
+        while e is not None:
+            if isinstance(e, ActiveVisionWrapper):
+                e.set_vision_cost(cost)
+                break
+            e = getattr(e, "env", None)
 
 
 def train(
@@ -208,6 +235,7 @@ def train(
         lstm_hidden_size=cfg.lstm_hidden_size,
         lstm_num_layers=cfg.lstm_num_layers,
         n_extras=n_extras,
+        use_fresh_gate=cfg.use_fresh_gate,
     ).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=cfg.learning_rate, eps=1e-5)
 
@@ -215,6 +243,13 @@ def train(
     extras_buf = (
         torch.zeros((cfg.num_steps, cfg.num_envs, n_extras), dtype=torch.float32).to(device)
         if n_extras > 0
+        else None
+    )
+    # is_fresh_buf: 1 if the observation at this step came from a HF render.
+    # Stored as float for direct use in the gating formula.
+    is_fresh_buf = (
+        torch.zeros((cfg.num_steps, cfg.num_envs, 1), dtype=torch.float32).to(device)
+        if cfg.use_fresh_gate
         else None
     )
     actions = torch.zeros((cfg.num_steps, cfg.num_envs), dtype=torch.long).to(device)
@@ -244,6 +279,13 @@ def train(
     next_obs, next_extras = _split_obs(next_obs_np)
     next_done = torch.zeros(cfg.num_envs).to(device)
     next_lstm_state = agent.initial_state(cfg.num_envs, device)
+    # Freshness of the current observation (1=HF, 0=stale LF).
+    # First observation after reset is always treated as fresh.
+    next_is_fresh = (
+        torch.ones(cfg.num_envs, 1, dtype=torch.float32).to(device)
+        if cfg.use_fresh_gate
+        else None
+    )
 
     for iteration in range(1, cfg.num_iterations + 1):
         initial_lstm_state = (
@@ -254,11 +296,29 @@ def train(
             frac = 1.0 - (iteration - 1.0) / cfg.num_iterations
             optimizer.param_groups[0]["lr"] = frac * cfg.learning_rate
 
+        # Phase curriculum (only active when use_fresh_gate=True):
+        #   Phase 1 (step < gate_warmup_start): gate_alpha=0, ent=ent_coef_phase1
+        #   Phase 2 (step in [warmup_start, warmup_end]): gate_alpha 0→1, ent phase1→ent_coef
+        #   vision_cost is fixed at cfg.vision_cost throughout both phases.
+        gate_alpha = 0.0
+        current_ent_coef = cfg.ent_coef
+        if cfg.use_fresh_gate:
+            current_ent_coef = cfg.ent_coef_phase1  # Phase 1 default
+            if global_step >= cfg.gate_warmup_start:
+                span = max(1, cfg.gate_warmup_end - cfg.gate_warmup_start)
+                gate_alpha = min(1.0, (global_step - cfg.gate_warmup_start) / span)
+                current_ent_coef = (
+                    cfg.ent_coef_phase1
+                    + gate_alpha * (cfg.ent_coef - cfg.ent_coef_phase1)
+                )
+
         for step in range(cfg.num_steps):
             global_step += cfg.num_envs
             obs[step] = next_obs
             if extras_buf is not None:
                 extras_buf[step] = next_extras
+            if is_fresh_buf is not None:
+                is_fresh_buf[step] = next_is_fresh
             dones[step] = next_done
 
             with torch.no_grad():
@@ -268,6 +328,8 @@ def train(
                         next_lstm_state,
                         next_done,
                         extras=next_extras,
+                        is_fresh=next_is_fresh,
+                        gate_alpha=gate_alpha,
                     )
                 )
                 values[step] = value.flatten()
@@ -297,6 +359,11 @@ def train(
                 )
                 if cfg.use_active_vision else None
             )
+            # next_is_fresh: freshness of next_obs (used at the next step).
+            if cfg.use_fresh_gate and hf_step is not None:
+                next_is_fresh = torch.as_tensor(
+                    hf_step, dtype=torch.float32
+                ).unsqueeze(1).to(device)  # (num_envs, 1)
             for i in range(cfg.num_envs):
                 ep_returns[i] += float(reward[i])
                 ep_lengths[i] += 1
@@ -341,7 +408,8 @@ def train(
 
         with torch.no_grad():
             next_value = agent.get_value(
-                next_obs.float(), next_lstm_state, next_done, extras=next_extras
+                next_obs.float(), next_lstm_state, next_done,
+                extras=next_extras, is_fresh=next_is_fresh, gate_alpha=gate_alpha,
             ).reshape(1, -1)
             advantages = torch.zeros_like(rewards).to(device)
             lastgaelam = 0
@@ -392,12 +460,19 @@ def train(
                     if extras_buf is not None
                     else None
                 )
+                flat_is_fresh = (
+                    is_fresh_buf[:, mb_envs_t].reshape(-1, 1)
+                    if is_fresh_buf is not None
+                    else None
+                )
                 _, newlogprob, entropy, newvalue, _ = agent.get_action_and_value(
                     flat_obs,
                     mb_initial_state,
                     flat_dones,
                     mb_actions,
                     extras=flat_extras,
+                    is_fresh=flat_is_fresh,
+                    gate_alpha=gate_alpha,
                 )
 
                 logratio = newlogprob - mb_logprobs_old
@@ -435,7 +510,7 @@ def train(
                     v_loss = 0.5 * ((newvalue - mb_returns) ** 2).mean()
 
                 entropy_loss = entropy.mean()
-                loss = pg_loss - cfg.ent_coef * entropy_loss + v_loss * cfg.vf_coef
+                loss = pg_loss - current_ent_coef * entropy_loss + v_loss * cfg.vf_coef
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -452,6 +527,9 @@ def train(
             float("nan") if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
         )
 
+        if cfg.use_fresh_gate:
+            writer.add_scalar("charts/gate_alpha", gate_alpha, global_step)
+            writer.add_scalar("charts/ent_coef", current_ent_coef, global_step)
         writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
         writer.add_scalar("losses/policy_loss", pg_loss.item(), global_step)
         writer.add_scalar("losses/entropy", entropy_loss.item(), global_step)
@@ -491,7 +569,13 @@ def train(
                         "use_active_vision": cfg.use_active_vision,
                         "vision_cost": cfg.vision_cost,
                         "strobe_k": cfg.strobe_k,
+                        "hf_strobe_k": cfg.hf_strobe_k,
                         "high_freq_steps": cfg.high_freq_steps,
+                        "use_depth": cfg.use_depth,
+                        "use_fresh_gate": cfg.use_fresh_gate,
+                        "gate_warmup_start": cfg.gate_warmup_start,
+                        "gate_warmup_end": cfg.gate_warmup_end,
+                        "ent_coef_phase1": cfg.ent_coef_phase1,
                         "n_extras": n_extras,
                         "turn_step_deg": cfg.turn_step_deg,
                     },

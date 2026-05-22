@@ -29,15 +29,56 @@ class Grayscale64Wrapper(gym.ObservationWrapper):
         return cv2.resize(gray, (self.size, self.size), interpolation=cv2.INTER_AREA)
 
 
+class GrayscaleDepth64Wrapper(gym.ObservationWrapper):
+    """RGB + depth buffer -> (2, 64, 64) uint8: channel 0 = grayscale, channel 1 = depth.
+
+    Depth is read directly from the inner env's OpenGL framebuffer (obs_fb)
+    after each render — no second render pass needed.  Values are clamped to
+    [0, depth_max_m] metres then mapped linearly to [0, 255].
+    """
+
+    def __init__(self, env: gym.Env, size: int = 64, depth_max_m: float = 10.0):
+        super().__init__(env)
+        self.size = size
+        self.depth_max_m = float(depth_max_m)
+        self.observation_space = spaces.Box(
+            low=0, high=255, shape=(2, size, size), dtype=np.uint8
+        )
+
+    def observation(self, obs: np.ndarray) -> np.ndarray:
+        gray = cv2.cvtColor(obs, cv2.COLOR_RGB2GRAY)
+        gray = cv2.resize(gray, (self.size, self.size), interpolation=cv2.INTER_AREA)
+
+        # Read depth from the already-rendered framebuffer — no re-render.
+        inner = self.env.unwrapped
+        raw_depth = inner.obs_fb.get_depth_map(0.04, 100.0)  # (H, W, 1) float32, metres
+        raw_depth = raw_depth[:, :, 0]
+        depth_norm = np.clip(raw_depth / self.depth_max_m, 0.0, 1.0)
+        depth_u8 = (depth_norm * 255.0).astype(np.uint8)
+        depth_u8 = cv2.resize(depth_u8, (self.size, self.size), interpolation=cv2.INTER_AREA)
+
+        return np.stack([gray, depth_u8], axis=0)  # (2, H, W)
+
+
 class FrameStack4Wrapper(gym.ObservationWrapper):
-    """Stack last 4 grayscale frames along a leading channel axis: (4, H, W)."""
+    """Stack last k frames along a leading channel axis.
+
+    Input shape (H, W)     → output (k, H, W).
+    Input shape (C, H, W)  → output (k*C, H, W).
+    """
 
     def __init__(self, env: gym.Env, k: int = 4):
         super().__init__(env)
         self.k = k
-        h, w = env.observation_space.shape
+        shape = env.observation_space.shape
+        if len(shape) == 2:
+            h, w = shape
+            out_shape = (k, h, w)
+        else:
+            c, h, w = shape
+            out_shape = (k * c, h, w)
         self.observation_space = spaces.Box(
-            low=0, high=255, shape=(k, h, w), dtype=np.uint8
+            low=0, high=255, shape=out_shape, dtype=np.uint8
         )
         self._frames: list[np.ndarray] = []
 
@@ -52,7 +93,9 @@ class FrameStack4Wrapper(gym.ObservationWrapper):
         return self._stack()
 
     def _stack(self) -> np.ndarray:
-        return np.stack(self._frames, axis=0)
+        if self._frames[0].ndim == 2:
+            return np.stack(self._frames, axis=0)       # (k, H, W)
+        return np.concatenate(self._frames, axis=0)     # (k*C, H, W)
 
 class StroboscopicWrapper(gym.ObservationWrapper):
     """Repeat each grayscale frame for k steps before refreshing it."""
@@ -231,6 +274,7 @@ class ActiveVisionWrapper(gym.Wrapper):
         env: gym.Env,
         n_base_actions: int,
         k: int = 7,
+        hf_strobe_k: int = 1,
         vision_cost: float = 0.01,
     ):
         """
@@ -240,7 +284,9 @@ class ActiveVisionWrapper(gym.Wrapper):
         n_base_actions : number of movement actions (3 for static maze).
         k              : stroboscopic hold length for low-freq actions
                          (default 7 → ~5 Hz at 35 Hz physics tick).
-        vision_cost    : reward penalty per high-freq step (default 0.01).
+        hf_strobe_k    : hold length for high-freq actions (default 1 → 35 Hz).
+                         Set to 2 → ~17.5 Hz, 3 → ~11.7 Hz, 7 → ~5 Hz.
+        vision_cost    : reward penalty applied every high-freq step (default 0.01).
         """
         super().__init__(env)
         if not isinstance(env.observation_space, spaces.Box):
@@ -250,6 +296,7 @@ class ActiveVisionWrapper(gym.Wrapper):
                 "Ensure Grayscale64Wrapper is applied first."
             )
         self.k = int(k)
+        self.hf_strobe_k = int(hf_strobe_k)
         self.n_base_actions = int(n_base_actions)
         self.vision_cost = float(vision_cost)
 
@@ -257,12 +304,14 @@ class ActiveVisionWrapper(gym.Wrapper):
         self.action_space = spaces.Discrete(2 * n_base_actions)
 
         self._hold_counter: int = 0
+        self._hf_hold_counter: int = 0
         self._last_obs: np.ndarray | None = None
 
     def reset(self, *, seed=None, options=None):
         obs, info = self.env.reset(seed=seed, options=options)
         self._last_obs = obs.copy()
         self._hold_counter = self.k - 1
+        self._hf_hold_counter = 0
         return self._last_obs.copy(), info
 
     def step(self, action: int):  # type: ignore[override]
@@ -272,25 +321,36 @@ class ActiveVisionWrapper(gym.Wrapper):
 
         obs, reward, terminated, truncated, info = self.env.step(inner_action)
 
+        # Per-step HF penalty normalised by max episode length so the total
+        # ceiling equals vision_cost regardless of how long the episode runs.
         if high_freq:
             reward -= self.vision_cost
 
         if high_freq:
-            # 35 Hz: always deliver a fresh frame.
-            self._last_obs = obs.copy()
-            # Reset stroboscopic counter so next low-freq action starts
-            # a full k-step hold.
+            # HF stroboscopic: refresh every hf_strobe_k steps (1 → always fresh).
+            if self._hf_hold_counter == 0:
+                self._last_obs = obs.copy()
+                self._hf_hold_counter = self.hf_strobe_k - 1
+            else:
+                self._hf_hold_counter -= 1
+            # Reset LF counter so next LF action starts a fresh k-step hold.
             self._hold_counter = self.k - 1
         else:
-            # 5 Hz stroboscopic: hold frame for k steps.
+            # LF stroboscopic: hold frame for k steps.
             if self._hold_counter == 0:
                 self._last_obs = obs.copy()
                 self._hold_counter = self.k - 1
             else:
                 self._hold_counter -= 1
+            # Reset HF counter so the next HF burst always starts fresh.
+            self._hf_hold_counter = 0
 
         info["high_freq"] = high_freq
         return self._last_obs.copy(), reward, terminated, truncated, info
+
+    def set_vision_cost(self, cost: float) -> None:
+        """Update vision_cost at runtime (used for curriculum scheduling)."""
+        self.vision_cost = float(cost)
 
 
 class VideoCompositeWrapper(gym.Wrapper):
@@ -330,20 +390,48 @@ class ProprioWrapper(gym.Wrapper):
     Observation becomes a dict::
 
         {"image":  same shape/dtype as the inner env,
-         "extras": (n_actions + 1 + 2,) float32}
+         "extras": float32 vector}
 
-    Extras layout: [prev_action one-hot, prev_reward, sin(heading), cos(heading)].
+    Two extras layouts are supported:
+
+    Default (use_perception_extras=False):
+        [prev_action one-hot (n_actions), prev_reward, sin(heading), cos(heading)]
+        Total: n_actions + 3
+
+    Perception-aware (use_perception_extras=True, for active-vision agents):
+        [is_hf, staleness_norm, prev_reward, sin(heading), cos(heading)]
+        Total: 5
+
+        is_hf         — 1.0 if the last action was a HF action, else 0.0
+        staleness_norm — steps since last HF action, normalised by
+                         STALENESS_NORM_CAP and clamped to [0, 1].
+                         Tells the value function how outdated the current
+                         frame is without the LSTM having to infer it from
+                         the action one-hot.
+
     Heading is read from the unwrapped MiniWorld agent's `dir` (radians).
-    Extras are always fresh — `StroboscopicWrapper` only throttles the
-    visual stream, not proprioception.
+    Extras are always fresh — stroboscopic wrappers only throttle the visual
+    stream, not proprioception.
     """
 
-    def __init__(self, env: gym.Env, n_actions: int):
+    STALENESS_NORM_CAP: float = 50.0  # steps; saturates signal at ~50 stale steps
+
+    def __init__(
+        self,
+        env: gym.Env,
+        n_actions: int,
+        use_perception_extras: bool = False,
+        n_base_actions: int | None = None,
+    ):
         super().__init__(env)
         assert isinstance(env.observation_space, spaces.Box)
         self._image_space = env.observation_space
         self.n_actions = int(n_actions)
-        self.n_extras = self.n_actions + 1 + 2
+        self.use_perception_extras = use_perception_extras
+        # n_base_actions: threshold for is_hf detection (actions >= threshold are HF).
+        # Only used when use_perception_extras=True.
+        self.n_base_actions = int(n_base_actions) if n_base_actions is not None else n_actions
+        self.n_extras = 5 if use_perception_extras else (self.n_actions + 3)
         self.observation_space = spaces.Dict(
             {
                 "image": self._image_space,
@@ -357,17 +445,27 @@ class ProprioWrapper(gym.Wrapper):
         )
         self._prev_action: int | None = None
         self._prev_reward: float = 0.0
+        self._staleness: int = 0  # steps since last HF action
 
     def _heading(self) -> tuple[float, float]:
         d = float(self.env.unwrapped.agent.dir)
         return float(np.sin(d)), float(np.cos(d))
 
     def _build_extras(self) -> np.ndarray:
+        s, c = self._heading()
+        if self.use_perception_extras:
+            is_hf = float(
+                self._prev_action is not None
+                and self._prev_action >= self.n_base_actions
+            )
+            staleness_norm = min(self._staleness / self.STALENESS_NORM_CAP, 1.0)
+            return np.array(
+                [is_hf, staleness_norm, self._prev_reward, s, c], dtype=np.float32
+            )
         extras = np.zeros(self.n_extras, dtype=np.float32)
         if self._prev_action is not None:
             extras[int(self._prev_action)] = 1.0
         extras[self.n_actions] = float(self._prev_reward)
-        s, c = self._heading()
         extras[self.n_actions + 1] = s
         extras[self.n_actions + 2] = c
         return extras
@@ -376,12 +474,18 @@ class ProprioWrapper(gym.Wrapper):
         obs, info = self.env.reset(seed=seed, options=options)
         self._prev_action = None
         self._prev_reward = 0.0
+        self._staleness = 0
         return {"image": obs, "extras": self._build_extras()}, info
 
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
         self._prev_action = int(action)
         self._prev_reward = float(reward)
+        if self.use_perception_extras:
+            if int(action) >= self.n_base_actions:
+                self._staleness = 0
+            else:
+                self._staleness += 1
         return (
             {"image": obs, "extras": self._build_extras()},
             reward,
