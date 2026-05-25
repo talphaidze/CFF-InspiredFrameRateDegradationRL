@@ -36,6 +36,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--seed", type=int, default=1000)
     p.add_argument("--deterministic", action="store_true")
     p.add_argument(
+        "--density", action="store_true",
+        help="Fixed-layout density mode: same env seed every episode, "
+             "vary only policy sampling. Produces a visit-count heatmap.",
+    )
+    p.add_argument(
         "--out",
         type=Path,
         default=None,
@@ -59,6 +64,9 @@ def collect_trajectories(
     use_proprio: bool,
     use_active_gating: bool,
     use_active_vision: bool,
+    use_fresh_gate: bool = False,
+    n_base_actions: int = 3,
+    fixed_layout: bool = False,
 ) -> list[dict]:
     """Run *episodes* and return per-episode trajectory data.
 
@@ -78,7 +86,11 @@ def collect_trajectories(
 
     trajectories: list[dict] = []
     for ep in range(episodes):
-        obs, _ = env.reset(seed=seed + ep)
+        # fixed_layout: same env seed every episode so goal/obstacles/spawn
+        # stay identical; vary only the torch RNG for stochastic sampling.
+        env_seed = seed if fixed_layout else seed + ep
+        torch.manual_seed(seed + ep)
+        obs, _ = env.reset(seed=env_seed)
 
         # Grab top-down snapshot right after reset so it matches this episode's layout.
         inner = env.unwrapped
@@ -107,6 +119,7 @@ def collect_trajectories(
 
         positions, hf_flags, actions = [], [], []
         terminated = truncated = False
+        prev_action = None  # for is_fresh computation
 
         if recurrent:
             lstm_state = agent.initial_state(1, device)
@@ -118,14 +131,26 @@ def collect_trajectories(
             positions.append([float(pos[0]), float(pos[2])])
 
             x, ext = _split(obs)
+            # Compute is_fresh for fresh-gate models.
+            is_fresh_t = None
+            if use_fresh_gate and recurrent:
+                if prev_action is not None and prev_action >= n_base_actions:
+                    is_fresh_t = torch.ones(1, 1, device=device)
+                else:
+                    is_fresh_t = torch.zeros(1, 1, device=device)
+
             with torch.no_grad():
                 if recurrent:
                     if deterministic:
-                        h, lstm_state = agent.get_states(x, lstm_state, done_t, extras=ext)
+                        h, lstm_state = agent.get_states(
+                            x, lstm_state, done_t, extras=ext,
+                            is_fresh=is_fresh_t, gate_alpha=1.0,
+                        )
                         action = int(agent.actor(h).argmax(dim=-1).item())
                     else:
                         a, _, _, _, lstm_state = agent.get_action_and_value(
-                            x, lstm_state, done_t, extras=ext
+                            x, lstm_state, done_t, extras=ext,
+                            is_fresh=is_fresh_t, gate_alpha=1.0,
                         )
                         action = int(a.item())
                 else:
@@ -138,6 +163,7 @@ def collect_trajectories(
 
             obs, _r, terminated, truncated, info = env.step(action)
             actions.append(action)
+            prev_action = action
 
             # Record perception mode.
             if use_active_vision:
@@ -316,6 +342,77 @@ def plot_heatmap(
     print(f"saved heatmap → {out_path}")
 
 
+def plot_density(
+    topdown: np.ndarray,
+    bounds: tuple[float, float, float, float],
+    trajectories: list[dict],
+    use_active_gating: bool,
+    use_active_vision: bool,
+    out_path: Path,
+) -> None:
+    """Render a visit-count density heatmap over all episodes."""
+    min_x, max_x, min_z, max_z = bounds
+
+    # Collect all positions and high-freq flags.
+    all_pos = np.concatenate([t["positions"] for t in trajectories], axis=0)
+    all_hf = np.concatenate([t["high_freq"] for t in trajectories], axis=0)
+
+    n_episodes = len(trajectories)
+    n_success = sum(t["success"] for t in trajectories)
+    n_hf_total = int(all_hf.sum())
+
+    # Bin positions into a 2D histogram.
+    bins = 80
+    x_edges = np.linspace(min_x, max_x, bins + 1)
+    z_edges = np.linspace(min_z, max_z, bins + 1)
+
+    visit_counts, _, _ = np.histogram2d(
+        all_pos[:, 0], all_pos[:, 1], bins=[x_edges, z_edges]
+    )
+    hf_counts, _, _ = np.histogram2d(
+        all_pos[all_hf, 0], all_pos[all_hf, 1], bins=[x_edges, z_edges]
+    )
+
+    # --- Figure with two subplots: visit density + high-freq density ---
+    fig, axes = plt.subplots(1, 2, figsize=(20, 10))
+
+    for ax, data, title, cmap in [
+        (axes[0], visit_counts.T, "Visit density", "hot"),
+        (axes[1], hf_counts.T, "High-freq density", "Reds"),
+    ]:
+        ax.imshow(topdown, extent=[min_x, max_x, min_z, max_z], origin="lower")
+        # Mask zero bins so the background shows through.
+        masked = np.ma.masked_where(data == 0, data)
+        ax.imshow(
+            masked, extent=[min_x, max_x, min_z, max_z], origin="lower",
+            cmap=cmap, alpha=0.7, interpolation="gaussian",
+        )
+        ax.set_title(title, fontsize=13)
+        ax.set_xlabel("x (world)")
+        ax.set_ylabel("z (world)")
+
+    # Stats text.
+    if use_active_vision:
+        mode = "Active Vision (C v2)"
+    elif use_active_gating:
+        mode = "Active Gating (C v1)"
+    else:
+        mode = "Baseline"
+    stats_text = (
+        f"{mode}\n"
+        f"episodes: {n_episodes}  success: {n_success}/{n_episodes} "
+        f"({100*n_success/max(n_episodes,1):.1f}%)\n"
+        f"total steps: {len(all_pos)}  high-freq: {n_hf_total} "
+        f"({100*n_hf_total/max(len(all_pos),1):.1f}%)"
+    )
+    fig.suptitle(stats_text, fontsize=12, fontfamily="monospace", y=0.98)
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(str(out_path), dpi=200)
+    plt.close(fig)
+    print(f"saved density heatmap → {out_path}")
+
+
 def main() -> None:
     args = parse_args()
     ckpt = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
@@ -332,10 +429,21 @@ def main() -> None:
     use_active_gating = arch.get("use_active_gating", False) or args.use_active_gating
     use_active_vision = arch.get("use_active_vision", False) or args.use_active_vision
     strobe_k = arch.get("strobe_k", 7)
+    hf_strobe_k = arch.get("hf_strobe_k", 1)
     high_freq_steps = arch.get("high_freq_steps", 35)
     n_extras = arch.get("n_extras", 0)
     turn_step_deg = arch.get("turn_step_deg", 90)
     vision_cost = arch.get("vision_cost", 0.01)
+    use_depth = arch.get("use_depth", False)
+    distance_reward = arch.get("distance_reward", None)
+    use_fresh_gate = arch.get("use_fresh_gate", False)
+    # Older checkpoints don't have use_perception_extras; infer from n_extras.
+    # With perception extras: n_extras == 5.  Without: n_extras == n_actions + 3.
+    if "use_perception_extras" in arch:
+        use_perception_extras = arch["use_perception_extras"]
+    else:
+        # Infer: if n_extras == 5 it was trained with perception extras.
+        use_perception_extras = (n_extras == 5)
 
     # ---- build env (rgb_array for top-down snapshot) ----
     env_kwargs = dict(
@@ -348,8 +456,12 @@ def main() -> None:
         use_active_vision=use_active_vision,
         vision_cost=vision_cost,
         strobe_k=strobe_k,
+        hf_strobe_k=hf_strobe_k,
         high_freq_steps=high_freq_steps,
         turn_step_deg=turn_step_deg,
+        use_depth=use_depth,
+        distance_reward=distance_reward,
+        use_perception_extras=use_perception_extras,
         render_mode="rgb_array",
     )
     env = make_static_env(**env_kwargs)
@@ -368,6 +480,7 @@ def main() -> None:
             lstm_hidden_size=lstm_hidden_size,
             lstm_num_layers=lstm_num_layers,
             n_extras=n_extras,
+            use_fresh_gate=use_fresh_gate,
         ).to(device)
     else:
         agent = NatureCNN(
@@ -377,6 +490,7 @@ def main() -> None:
     agent.eval()
 
     # ---- collect trajectories ----
+    from cff_rl.envs.static_maze import STATIC_ACTIONS
     trajectories = collect_trajectories(
         agent=agent,
         device=device,
@@ -388,6 +502,9 @@ def main() -> None:
         use_proprio=use_proprio,
         use_active_gating=use_active_gating,
         use_active_vision=use_active_vision,
+        use_fresh_gate=use_fresh_gate,
+        n_base_actions=len(STATIC_ACTIONS),
+        fixed_layout=args.density,
     )
     env.close()
 
@@ -397,30 +514,42 @@ def main() -> None:
     total_hf = sum(t["high_freq"].sum() for t in trajectories)
     print(f"episodes: {args.episodes}  success: {n_success}/{args.episodes}")
     print(f"total steps: {total_steps}  high-freq steps: {int(total_hf)}")
-    for i, traj in enumerate(trajectories):
-        pos = traj["positions"]
-        print(f"\n--- episode {i} ({'ok' if traj['success'] else 'fail'}) ---")
-        for t, (x, z) in enumerate(pos):
-            hf = traj["high_freq"][t]
-            act = traj["actions"][t]
-            print(f"  step {t:4d}: x={x:7.3f} z={z:7.3f}  action={act}  hf={hf}")
 
-    # ---- plot one image per episode ----
-    from cff_rl.envs.static_maze import STATIC_ACTIONS
     base_out = args.out or (args.checkpoint.parent / "heatmap.png")
-    for i, traj in enumerate(trajectories):
-        if args.episodes == 1:
-            out_path = base_out
-        else:
-            out_path = base_out.with_stem(f"{base_out.stem}_ep{i}")
-        plot_heatmap(
-            traj=traj,
-            ep_index=i,
+
+    if args.density:
+        # ---- density mode: aggregate all episodes into one heatmap ----
+        plot_density(
+            topdown=trajectories[0]["topdown"],
+            bounds=trajectories[0]["bounds"],
+            trajectories=trajectories,
             use_active_gating=use_active_gating,
             use_active_vision=use_active_vision,
-            n_base_actions=len(STATIC_ACTIONS),
-            out_path=out_path,
+            out_path=base_out,
         )
+    else:
+        # ---- per-episode mode: print paths + one image per episode ----
+        for i, traj in enumerate(trajectories):
+            pos = traj["positions"]
+            print(f"\n--- episode {i} ({'ok' if traj['success'] else 'fail'}) ---")
+            for t, (x, z) in enumerate(pos):
+                hf = traj["high_freq"][t]
+                act = traj["actions"][t]
+                print(f"  step {t:4d}: x={x:7.3f} z={z:7.3f}  action={act}  hf={hf}")
+
+        for i, traj in enumerate(trajectories):
+            if args.episodes == 1:
+                out_path = base_out
+            else:
+                out_path = base_out.with_stem(f"{base_out.stem}_ep{i}")
+            plot_heatmap(
+                traj=traj,
+                ep_index=i,
+                use_active_gating=use_active_gating,
+                use_active_vision=use_active_vision,
+                n_base_actions=len(STATIC_ACTIONS),
+                out_path=out_path,
+            )
 
 
 if __name__ == "__main__":

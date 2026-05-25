@@ -50,7 +50,9 @@ FORWARD_STEP = 0.5
 OBS_SIZE = 64
 FRAME_STACK = 8
 MAX_EPISODE_STEPS = {"MiniWorld-FourRooms-v0": 500,
-                     "MiniWorld-FourRoomsHard-v0": 1000}
+                     "MiniWorld-FourRoomsHard-v0": 1000,
+                     "MiniWorld-FourRoomsHardDynamic-v0": 1000,
+                     "MiniWorld-FourRoomsHardDynamic2d-v0": 1000}
 
 
 def make_static_env(
@@ -70,6 +72,7 @@ def make_static_env(
     turn_step_deg: int = TURN_STEP_DEG,
     max_episode_steps: int | None = None,
     distance_reward: float | None = None,
+    use_perception_extras: bool | None = None,
 ) -> gym.Env:
     """Build the Regime 1 environment for Agent A, B, C."""
 
@@ -151,10 +154,13 @@ def make_static_env(
             n_actions = len(STATIC_ACTIONS) + 1
         else:
             n_actions = len(STATIC_ACTIONS)
+        # Default: use_perception_extras follows use_active_vision unless
+        # explicitly overridden (e.g. by eval scripts loading older checkpoints).
+        _perception_extras = use_active_vision if use_perception_extras is None else use_perception_extras
         env = ProprioWrapper(
             env,
             n_actions=n_actions,
-            use_perception_extras=use_active_vision,
+            use_perception_extras=_perception_extras,
             n_base_actions=len(STATIC_ACTIONS) if use_active_vision else None,
         )
 
