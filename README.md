@@ -37,9 +37,9 @@ submit_job.sh            SLURM submission script for Agent A
 | Agent      | Config File |
 |------------|-------------|
 | Agent A    | — |
-| Agent B    | — |
+| Agent B    | `agent_b_fourrooms_lstm_turn10.yaml` |
 | Agent C v1 | `agent_c_fourrooms_lstm_turn10_hf1.yaml` |
-| Agent C v2 | — |
+| Agent C v2 | `agent_c2_fourrooms_lstm_turn10.yaml` |
 
 ### Hard Static
 | Agent                        | Config File |
