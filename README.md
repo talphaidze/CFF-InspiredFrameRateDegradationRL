@@ -31,6 +31,32 @@ setup_env_izar.sh        One-time Izar env setup (miniforge + pip install -e .)
 submit_job.sh            SLURM submission script for Agent A
 ```
 
+## Agent Configs
+
+### Easy Static
+| Agent      | Config File |
+|------------|-------------|
+| Agent A    | — |
+| Agent B    | — |
+| Agent C v1 | `agent_c_fourrooms_lstm_turn10_hf1.yaml` |
+| Agent C v2 | — |
+
+### Hard Static
+| Agent                        | Config File |
+|------------------------------|-------------|
+| Agent A                      | `agent_a_fourroomshard_v2_lstm_proprio_turn10_3M.yaml` |
+| Agent B                      | `agent_b_fourroomshard_v2_lstm_proprio_turn10.yaml` |
+| Agent C v2 (static trained)  | — |
+| Agent C v2 (dynamic trained) | `agent_c2_fourroomshard_dynamic_4d_lstm_proprio_turn10_6M_gate_vc000002.yaml` |
+
+### Hard Dynamic
+| Agent      | Config File |
+|------------|-------------|
+| Agent A    | `agent_a_fourroomshard_dynamic_lstm_proprio_turn10.yaml` |
+| Agent B    | `agent_b_fourroomshard_dynamic_4d_lstm_proprio_turn10.yaml` |
+| Agent C v2 | `agent_c2_fourroomshard_dynamic_4d_lstm_proprio_turn10_6M_gate_vc000002.yaml` |
+
+
 ## Local development (macOS / Linux with uv)
 
 ```bash
