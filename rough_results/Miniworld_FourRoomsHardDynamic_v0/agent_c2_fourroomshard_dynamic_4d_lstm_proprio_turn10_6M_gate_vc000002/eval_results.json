@@ -1,0 +1,98 @@
+{
+  "checkpoint": "runs/agent_c2_fourroomshard_dynamic_4d_lstm_proprio_turn10_6M_gate_vc000002__42__1780128691/ckpt_001464.pt",
+  "env_id": "MiniWorld-FourRoomsHardDynamic-v0",
+  "seeds": [
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "episodes_per_seed": 50,
+  "deterministic": false,
+  "per_seed": [
+    {
+      "seed": 1,
+      "episodes": 50,
+      "success_rate": 1.0,
+      "mean_return": 0.9582159999999998,
+      "mean_length": 192.62,
+      "mean_reversals": 3.68,
+      "mean_collisions": 6.54,
+      "mean_sal_per_episode": 0.0,
+      "mean_highfreq_per_episode": 163.0
+    },
+    {
+      "seed": 2,
+      "episodes": 50,
+      "success_rate": 0.98,
+      "mean_return": 0.94392,
+      "mean_length": 184.86,
+      "mean_reversals": 3.24,
+      "mean_collisions": 7.24,
+      "mean_sal_per_episode": 0.0,
+      "mean_highfreq_per_episode": 155.4
+    },
+    {
+      "seed": 3,
+      "episodes": 50,
+      "success_rate": 1.0,
+      "mean_return": 0.9638416,
+      "mean_length": 166.86,
+      "mean_reversals": 3.88,
+      "mean_collisions": 5.14,
+      "mean_sal_per_episode": 0.0,
+      "mean_highfreq_per_episode": 139.32
+    },
+    {
+      "seed": 4,
+      "episodes": 50,
+      "success_rate": 1.0,
+      "mean_return": 0.9656096,
+      "mean_length": 158.64,
+      "mean_reversals": 3.48,
+      "mean_collisions": 5.64,
+      "mean_sal_per_episode": 0.0,
+      "mean_highfreq_per_episode": 133.12
+    },
+    {
+      "seed": 5,
+      "episodes": 50,
+      "success_rate": 1.0,
+      "mean_return": 0.9660516,
+      "mean_length": 156.5,
+      "mean_reversals": 3.58,
+      "mean_collisions": 5.4,
+      "mean_sal_per_episode": 0.0,
+      "mean_highfreq_per_episode": 132.42
+    }
+  ],
+  "success_rate": [
+    0.9960000000000001,
+    0.008000000000000007
+  ],
+  "mean_return": [
+    0.95952776,
+    0.008288321521176653
+  ],
+  "mean_length": [
+    171.89600000000002,
+    14.392144524010318
+  ],
+  "mean_reversals": [
+    3.572,
+    0.21226398658274553
+  ],
+  "mean_collisions": [
+    5.992,
+    0.7820588213171693
+  ],
+  "mean_sal_per_episode": [
+    0.0,
+    0.0
+  ],
+  "mean_highfreq_per_episode": [
+    144.652,
+    12.35481833132321
+  ]
+}

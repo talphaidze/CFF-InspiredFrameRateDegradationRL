@@ -1,20 +1,17 @@
 """HF vision usage analyses for the vision-cost sweep.
 
-Analysis 1 — Spatial HF heatmap:
-    For vc=0.00002 and vc=0.0001, grid the maze floor and compute the fraction
+Analysis — Spatial HF heatmap:
+    For vc=2e-5 and vc=1e-4, grid the maze floor and compute the fraction
     of steps at each cell that used a HF action.  Doorways and pillars are
     overlaid as explicit markers so the reader can see whether HF concentrates
     at structurally important locations.
 
-Analysis 2 — Within-episode HF timing, split by outcome:
-    For all three cost conditions, bin steps by normalised episode time t/T and
-    plot mean HF fraction separately for successful and failed episodes.
-    Reveals whether the agent's HF allocation is outcome-predictive even when
-    the aggregate curve looks flat.
-
 Usage:
-    python scripts/plot_hf_analyses.py
-    python scripts/plot_hf_analyses.py --episodes 50 --out results/plots/
+
+    python scripts/plot_hf_analyses.py \
+        --ckpt-vc2e5 runs/.../ckpt_vc2e-5.pt \
+        --ckpt-vc1e4 runs/.../ckpt_vc1e-4.pt \
+        --episodes 50 --out results/plots/
 """
 from __future__ import annotations
 
@@ -27,23 +24,70 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+import matplotlib.colors as mcolors
+
+from gymnasium.envs.registration import register as _gym_register
 
 from cff_rl.agents.ppo_lstm import RecurrentNatureCNN
 from cff_rl.envs.static_maze import make_static_env
+from miniworld.entity import Ball as _Ball
+from cff_rl.envs.fourrooms_hard import FourRoomsHard
 
-ENV_ID = "MiniWorld-FourRoomsHardDynamic-v0"
+
+# ---------------------------------------------------------------------------
+# Fixed-layout variant: goal and balls locked; only agent start varies
+# ---------------------------------------------------------------------------
+
+class FixedLayoutFourRoomsHard(FourRoomsHard):
+    """FourRoomsHard where goal and distractor positions are fixed.
+
+    The parent's _gen_world sets up rooms, pillars, and entities (all randomly
+    placed), then we overwrite the xz coordinates of the goal and each
+    distractor ball with canonical values.  The agent's starting position is
+    left as-is so it still varies across episodes.
+
+    Positions are chosen to be well clear of pillars (±4, ±4) and doorways
+    (0, ±4) and (±4, 0).
+    """
+    _GOAL_XZ = (-6, -4.0)         # room2: x∈[1,7]  z∈[-7,-1]
+    _BALL_XZ = [
+        (-3.0,  6.0),               # room0: x∈[-7,-1] z∈[1,7]
+        ( 6.0,  6.0),               # room1: x∈[1,7]   z∈[1,7]
+        (-6.0, -6.0),               # room3: x∈[-7,-1] z∈[-7,-1]
+        ( 6.0, -6.0),               # room2: x∈[1,7]   z∈[-7,-1]
+    ]
+
+    def _gen_world(self):
+        super()._gen_world()        # randomises goal, balls, and agent
+        # Snap goal to fixed xz; y (floor clearance) is preserved from parent
+        self.box.pos[0] = self._GOAL_XZ[0]
+        self.box.pos[2] = self._GOAL_XZ[1]
+        # Collect distractor balls (all Ball entities that aren't the goal)
+        distractors = [e for e in self.entities
+                       if isinstance(e, _Ball) and e is not self.box]
+        for ball, (bx, bz) in zip(distractors, self._BALL_XZ):
+            ball.pos[0] = bx
+            ball.pos[2] = bz
+
+
+_gym_register(
+    id="MiniWorld-FourRoomsHardFixed-v0",
+    entry_point=FixedLayoutFourRoomsHard,
+)
+
+ENV_ID = "MiniWorld-FourRoomsHardFixed-v0"
 SEEDS = [1, 2, 3, 4, 5]
-N_TIME_BINS = 20
 GRID_CELLS = 60
 MIN_VISITS = 3
 
-RUNS: dict[str, str] = {
-    "vc=1e-5": "runs/agent_c2_fourroomshard_dynamic_4d_lstm_proprio_turn10_6M_gate_vc000001__42__1779343926/ckpt_001464.pt",
-    "vc=2e-5": "runs/agent_c2_fourroomshard_dynamic_4d_lstm_proprio_turn10_6M_gate_vc000002__42__1779355584/ckpt_001400.pt",
-    "vc=1e-4": "runs/agent_c2_fourroomshard_dynamic_4d_lstm_proprio_turn10_6M_gate_v2__42__1779311643/ckpt_001464.pt",
-}
+# Blue (all-LF) → light grey (50/50) → orange (all-HF)
+HF_CMAP = mcolors.LinearSegmentedColormap.from_list(
+    "hf_diverge",
+    [(0.0, "#2166ac"), (0.5, "#d9d9d9"), (1.0, "#d6604d")],
+)
+HF_CMAP.set_bad(color="#1a1a1a")   # dark grey for unvisited cells
 
-COLORS = {"vc=1e-5": "#e07b39", "vc=2e-5": "#2a7db5", "vc=1e-4": "#5ab55a"}
+COLORS = {"vc=2e-5": "#2a7db5", "vc=1e-4": "#5ab55a"}
 
 # ── Maze geometry (from fourrooms_hard.py _gen_world) ───────────────────────
 # Rooms: room0 x∈[-7,-1] z∈[1,7], room1 x∈[1,7] z∈[1,7],
@@ -126,11 +170,9 @@ def load_agent(ckpt_path: str, device: torch.device):
 # ---------------------------------------------------------------------------
 
 def collect_rollouts(agent, arch, device, seeds, episodes_per_seed):
-    """Returns per-step records with outcome label."""
-    # spatial: list of (x, z, hf_float, success)
+    """Returns per-step spatial records."""
+    # spatial: list of (x, z, hf_float, success, is_forward)
     spatial: list[tuple] = []
-    # temporal: list of (t_norm, hf_float, success)
-    temporal: list[tuple] = []
 
     for seed in seeds:
         env = make_static_env(
@@ -155,7 +197,7 @@ def collect_rollouts(agent, arch, device, seeds, episodes_per_seed):
                 torch.ones(1, 1, dtype=torch.float32, device=device)
                 if arch["use_fresh_gate"] else None
             )
-            ep_steps: list[tuple] = []   # (x, z, hf)
+            ep_steps: list[tuple] = []   # (x, z, hf, is_forward)
             terminated = truncated = False
 
             while not (terminated or truncated):
@@ -175,26 +217,23 @@ def collect_rollouts(agent, arch, device, seeds, episodes_per_seed):
                 action = int(a.item())
                 obs, _, terminated, truncated, info = env.step(action)
                 hf = float(info["high_freq"])
-                # is_forward: action % n_base_actions == 2 (move_forward index)
                 is_forward = int(action % 3 == 2)
                 ep_steps.append((float(pos[0]), float(pos[2]), hf, is_forward))
                 if arch["use_fresh_gate"]:
                     is_fresh = torch.tensor([[hf]], dtype=torch.float32, device=device)
 
             success = float(terminated)
-            T = len(ep_steps)
-            for t, (x, z, hf, is_fwd) in enumerate(ep_steps):
+            for x, z, hf, is_fwd in ep_steps:
                 spatial.append((x, z, hf, success, is_fwd))
-                temporal.append((t / max(T - 1, 1), hf, success))
 
         env.close()
         print(f"  seed {seed} done  ({episodes_per_seed} eps)")
 
-    return {"spatial": spatial, "temporal": temporal}
+    return {"spatial": spatial}
 
 
 # ---------------------------------------------------------------------------
-# Plot 1: Spatial HF heatmap with maze overlay
+# Plot: Spatial HF heatmap with maze overlay
 # ---------------------------------------------------------------------------
 
 def build_hf_grid(spatial, x_range, z_range, n_cells, action_filter=None):
@@ -219,43 +258,62 @@ def build_hf_grid(spatial, x_range, z_range, n_cells, action_filter=None):
 
 
 def draw_maze_overlay(ax):
-    """Draw room outlines, pillars, and doorway markers."""
-    # Room outlines (thin white lines)
+    """Draw room outlines, pillars, doorway markers, goal, and distractor balls."""
+    # Room outlines — bright white, clearly visible
     for (x0, x1, z0, z1) in ROOM_BOUNDS:
         rect = mpatches.Rectangle(
             (x0, z0), x1 - x0, z1 - z0,
-            linewidth=0.8, edgecolor="white", facecolor="none", alpha=0.5,
+            linewidth=1.8, edgecolor="white", facecolor="none", alpha=0.85,
+            zorder=3,
         )
         ax.add_patch(rect)
 
-    # Pillars (grey squares)
+    # Pillars — solid dark fill with a crisp white border
     for px, pz in PILLARS:
-        sq = mpatches.Rectangle(
-            (px - 0.5, pz - 0.5), 1.0, 1.0,
-            linewidth=0, facecolor="#888888", alpha=0.7,
+        sq = mpatches.FancyBboxPatch(
+            (px - 0.45, pz - 0.45), 0.9, 0.9,
+            boxstyle="square,pad=0",
+            linewidth=1.2, edgecolor="white", facecolor="#444444", alpha=0.95,
+            zorder=4,
         )
         ax.add_patch(sq)
 
-    # Doorways (cyan stars with label on first only)
-    for i, (dx, dz) in enumerate(DOORWAYS):
-        ax.plot(dx, dz, marker="*", markersize=12, color="cyan",
-                markeredgecolor="black", markeredgewidth=0.5, zorder=5,
-                label="doorway" if i == 0 else None)
+    # Goal (yellow box, 0.9×0.9 to match MiniWorld Box size)
+    gx, gz = FixedLayoutFourRoomsHard._GOAL_XZ
+    _BOX_SIZE = 0.9
+    ax.add_patch(mpatches.Rectangle(
+        (gx - _BOX_SIZE / 2, gz - _BOX_SIZE / 2), _BOX_SIZE, _BOX_SIZE,
+        linewidth=1.5, edgecolor="black", facecolor="#FFD700", alpha=0.95, zorder=6,
+    ))
+
+    # Distractor balls (red circles)
+    for bx, bz in FixedLayoutFourRoomsHard._BALL_XZ[:1]:
+        ax.plot(bx, bz, marker="o", markersize=9, color="#e84040",
+                markeredgecolor="black", markeredgewidth=0.9, zorder=6)
 
 
 def _single_heatmap(ax, spatial, x_range, z_range, action_filter, title):
     frac, xe, ze, _ = build_hf_grid(spatial, x_range, z_range, GRID_CELLS, action_filter)
     extent = [xe[0], xe[-1], ze[0], ze[-1]]
+
+    # Dark background for unvisited cells
+    ax.set_facecolor("#1a1a1a")
+
     im = ax.imshow(
         frac.T, origin="lower", extent=extent,
-        cmap=plt.cm.RdYlGn, vmin=0.0, vmax=1.0, aspect="equal",
+        cmap=HF_CMAP, vmin=0.0, vmax=1.0, aspect="equal",
     )
     draw_maze_overlay(ax)
-    ax.set_title(title, fontsize=11)
-    ax.set_xlabel("x (m)", fontsize=10)
-    ax.set_ylabel("z (m)", fontsize=10)
+    ax.set_title(title, fontsize=11, fontweight="bold", pad=6)
+    ax.set_xlabel("x (m)", fontsize=9)
+    ax.set_ylabel("z (m)", fontsize=9)
+    ax.tick_params(labelsize=8)
     ax.set_xlim(x_range)
     ax.set_ylim(z_range)
+    # Clean up spines
+    for spine in ax.spines.values():
+        spine.set_edgecolor("#555555")
+        spine.set_linewidth(0.8)
     return im
 
 
@@ -267,7 +325,7 @@ def plot_spatial(data_by_label, heatmap_labels, out_path):
     z_range = [min(all_z) - pad, max(all_z) + pad]
 
     # 3 rows (all / forward / turns) × 2 cols (vc=2e-5 / vc=1e-4)
-    row_labels   = ["all actions", "forward only", "turns only"]
+    row_labels    = ["all actions", "forward only", "turns only"]
     action_filters = [None, "forward", "turn"]
 
     fig, axes = plt.subplots(
@@ -287,23 +345,31 @@ def plot_spatial(data_by_label, heatmap_labels, out_path):
                 x_range, z_range, af, title,
             )
             im_ref = im
-            if col == 0:
-                ax.legend(loc="lower right", fontsize=8, framealpha=0.6)
 
     cb = fig.colorbar(im_ref, ax=axes, shrink=0.6, pad=0.02)
-    cb.set_label("HF fraction per cell", fontsize=11)
+    cb.set_label("HF fraction per cell  (blue = LF, orange = HF)", fontsize=10)
 
     pillar_patch = mpatches.Patch(facecolor="#888888", label="pillar")
+    goal_patch = mpatches.Patch(facecolor="#FFD700", edgecolor="black",  label="Goal")
+    obstacle_handle = plt.Line2D(
+        [0], [0], marker="o", color="none", markerfacecolor="#e84040",
+        markeredgecolor="black", markeredgewidth=0.9, markersize=9, label="Obstacle",
+    )
+    doorway_handle  = plt.Line2D(
+        [0], [0], marker="D", color="none", markerfacecolor="white",
+        markeredgecolor="#333333", markeredgewidth=0.8, markersize=8, label="Doorway",
+    )
     fig.legend(
-        handles=[pillar_patch],
-        loc="lower center", ncol=2, fontsize=9,
-        bbox_to_anchor=(0.5, -0.01),
+        handles=[pillar_patch, goal_patch, obstacle_handle, doorway_handle],
+        loc="lower center", ncol=4, fontsize=9,
+        bbox_to_anchor=(0.5, -0.01), 
+        handlelength=1.0,
     )
     fig.suptitle(
-        "Spatial HF vision usage — FourRoomsHardDynamic\n★ = doorway,  ■ = pillar",
+        "Spatial HF vision usage — FourRoomsHard",
         fontsize=14,
     )
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    fig.savefig(out_path, dpi=1000, bbox_inches="tight")
     plt.close(fig)
     print(f"Saved {out_path}")
 
@@ -326,115 +392,33 @@ def plot_spatial_single(label, data, out_path):
     for ax, row_lbl, af in zip(axes, row_labels, action_filters):
         im = _single_heatmap(ax, spatial, x_range, z_range, af, f"{label} — {row_lbl}")
         im_ref = im
-        ax.legend(loc="lower right", fontsize=8, framealpha=0.6)
 
     cb = fig.colorbar(im_ref, ax=axes, shrink=0.6, pad=0.02)
-    cb.set_label("HF fraction per cell", fontsize=11)
+    cb.set_label("HF fraction per cell  (blue = LF, orange = HF)", fontsize=10)
 
     pillar_patch = mpatches.Patch(facecolor="#888888", label="pillar")
+    goal_patch = mpatches.Patch(facecolor="#FFD700", edgecolor="black",  label="Goal")
+    obstacle_handle = plt.Line2D(
+        [0], [0], marker="o", color="none", markerfacecolor="#e84040",
+        markeredgecolor="black", markeredgewidth=0.9, markersize=9, label="Obstacle",
+    )
+    doorway_handle  = plt.Line2D(
+        [0], [0], marker="D", color="none", markerfacecolor="white",
+        markeredgecolor="#333333", markeredgewidth=0.8, markersize=8, label="Doorway",
+    )
     fig.legend(
-        handles=[pillar_patch],
-        loc="lower center", ncol=2, fontsize=9,
-        bbox_to_anchor=(0.5, -0.01),
+        handles=[pillar_patch, goal_patch, obstacle_handle, doorway_handle],
+        loc="lower center", ncol=4, fontsize=9,
+        bbox_to_anchor=(0.5, -0.01), 
+        handlelength=1.0,
     )
     fig.suptitle(
-        f"Spatial HF vision usage — {label}\n★ = doorway,  ■ = pillar",
+        f"Spatial HF vision usage — {label}",
         fontsize=14,
     )
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    fig.savefig(out_path, dpi=1000, bbox_inches="tight")
     plt.close(fig)
     print(f"Saved {out_path}")
-
-
-# ---------------------------------------------------------------------------
-# Plot 2: Within-episode HF timing — success vs failure
-# ---------------------------------------------------------------------------
-
-def bin_temporal(temporal, success_flag, n_bins=N_TIME_BINS):
-    bins = np.linspace(0, 1, n_bins + 1)
-    centers = (bins[:-1] + bins[1:]) / 2
-    subset = [(t, hf) for t, hf, s in temporal if s == success_flag]
-    if not subset:
-        return centers, np.full(n_bins, np.nan), np.full(n_bins, np.nan)
-    t_arr  = np.array([r[0] for r in subset])
-    hf_arr = np.array([r[1] for r in subset])
-    means, stds = [], []
-    for b in range(n_bins):
-        mask = (t_arr >= bins[b]) & (t_arr < bins[b + 1])
-        vals = hf_arr[mask]
-        means.append(vals.mean() if len(vals) > 0 else np.nan)
-        stds.append(vals.std()  if len(vals) > 0 else np.nan)
-    return centers, np.array(means), np.array(stds)
-
-
-def plot_timing(data_by_label, out_path):
-    bins = np.linspace(0, 1, N_TIME_BINS + 1)
-    bin_centers = (bins[:-1] + bins[1:]) / 2
-
-    fig, axes = plt.subplots(
-        1, len(data_by_label),
-        figsize=(5 * len(data_by_label), 4),
-        sharey=True, constrained_layout=True,
-    )
-    if len(data_by_label) == 1:
-        axes = [axes]
-
-    for ax, (label, data) in zip(axes, data_by_label.items()):
-        color = COLORS[label]
-        temporal = data["temporal"]
-
-        # Count success/failure for subtitle
-        n_success = sum(1 for _, _, s in temporal if s == 1.0)
-        n_fail    = sum(1 for _, _, s in temporal if s == 0.0)
-        # Approx episode counts (each episode contributes many steps)
-        ep_success = sum(1 for ep in _iter_episodes(temporal) if ep[0][2] == 1.0)
-        ep_fail    = sum(1 for ep in _iter_episodes(temporal) if ep[0][2] == 0.0)
-
-        for success_flag, linestyle, outcome_label in [
-            (1.0, "-",  f"success (n={ep_success})"),
-            (0.0, "--", f"failure (n={ep_fail})"),
-        ]:
-            c, means, stds = bin_temporal(temporal, success_flag)
-            if np.all(np.isnan(means)):
-                continue
-            ax.plot(c, means, color=color, linewidth=2,
-                    linestyle=linestyle, label=outcome_label)
-            ax.fill_between(
-                c,
-                np.clip(means - stds, 0, 1),
-                np.clip(means + stds, 0, 1),
-                color=color, alpha=0.12,
-            )
-
-        ax.axhline(0.5, color="gray", linestyle=":", linewidth=0.8, alpha=0.5)
-        ax.set_title(label, fontsize=13, fontweight="bold", color=color)
-        ax.set_xlabel("Normalised episode time  t / T", fontsize=11)
-        ax.set_xlim(0, 1)
-        ax.set_ylim(0, 1)
-        ax.legend(fontsize=9)
-
-    axes[0].set_ylabel("Mean HF fraction", fontsize=11)
-    fig.suptitle(
-        "Within-episode HF timing by outcome — FourRoomsHardDynamic",
-        fontsize=13,
-    )
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved {out_path}")
-
-
-def _iter_episodes(temporal):
-    """Group temporal records into episodes by detecting t_norm resets."""
-    if not temporal:
-        return
-    ep = [temporal[0]]
-    for rec in temporal[1:]:
-        if rec[0] < ep[-1][0]:   # t_norm decreased → new episode
-            yield ep
-            ep = [rec]
-        else:
-            ep.append(rec)
-    yield ep
 
 
 # ---------------------------------------------------------------------------
@@ -442,9 +426,21 @@ def _iter_episodes(temporal):
 # ---------------------------------------------------------------------------
 
 def parse_args():
-    p = argparse.ArgumentParser()
-    p.add_argument("--episodes", type=int, default=30)
-    p.add_argument("--out", type=Path, default=Path("results/plots"))
+    p = argparse.ArgumentParser(
+        description="Plot spatial HF heatmaps for vc=2e-5 and vc=1e-4 agents."
+    )
+    p.add_argument(
+        "--ckpt-vc2e5", required=True, metavar="PATH",
+        help="Checkpoint path for the vc=2e-5 agent.",
+    )
+    p.add_argument(
+        "--ckpt-vc1e4", required=True, metavar="PATH",
+        help="Checkpoint path for the vc=1e-4 agent.",
+    )
+    p.add_argument("--episodes", type=int, default=30,
+                   help="Episodes per seed (default: 30).")
+    p.add_argument("--out", type=Path, default=Path("results/plots"),
+                   help="Output directory for saved figures.")
     return p.parse_args()
 
 
@@ -453,8 +449,13 @@ def main():
     args.out.mkdir(parents=True, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    runs: dict[str, str] = {
+        "vc=2e-5": args.ckpt_vc2e5,
+        "vc=1e-4": args.ckpt_vc1e4,
+    }
+
     data_by_label: dict[str, dict] = {}
-    for label, ckpt_path in RUNS.items():
+    for label, ckpt_path in runs.items():
         print(f"\n--- Collecting rollouts: {label} ---")
         agent, arch = load_agent(ckpt_path, device)
         data_by_label[label] = collect_rollouts(
@@ -469,10 +470,6 @@ def main():
     for label, data in data_by_label.items():
         safe = label.replace("=", "").replace("-", "n")
         plot_spatial_single(label, data, args.out / f"hf_spatial_{safe}.png")
-    plot_timing(
-        data_by_label,
-        out_path=args.out / "hf_timing.png",
-    )
 
 
 if __name__ == "__main__":
