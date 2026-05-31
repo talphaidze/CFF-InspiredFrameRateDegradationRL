@@ -42,8 +42,8 @@ configs/                          YAML configs (see Agent Configs below)
 scripts/train.py                  Config-driven training entrypoint
 scripts/eval.py                   Rollout + evaluation metrics
 scripts/eval_dynamic_batch.py     Batched Hard-Dynamic evaluation
-scripts/eval_heatmap.py           Spatial HF-usage heatmaps
-scripts/plot_hf_analyses*.py      HF-usage / training-curve plots
+scripts/eval_heatmap.py           Another type of Spatial HF-usage heatmaps
+scripts/plot_hf_analyses.py       HeatMap (present in Website)
 scripts/plot_dynamic_3d.py        3D trajectory plots
 scripts/record_episode_video.py   Episode video rendering
 setup_env_izar.sh                 One-time Izar (SCITAS) env setup
@@ -75,38 +75,7 @@ submit_job.sh / submit_job_*.sh   SLURM submission scripts
 | Agent B    | `agent_b_fourroomshard_dynamic_4d_lstm_proprio_turn10.yaml` |
 | Agent C v2 | `agent_c2_fourroomshard_dynamic_4d_lstm_proprio_turn10_6M_gate_vc000002.yaml` |
 
-## Key Hyperparameters Default Values
-
-| Hyperparameter | Value |
-|---|---|
-| Total timesteps | 6 M |
-| Parallel envs / rollout steps | 16 / 256 |
-| Learning rate | 2.5 × 10⁻⁴ (linear → 0) |
-| Discount γ / GAE λ | 0.99 / 0.95 |
-| Clip coef / minibatches / epochs | 0.2 / 4 / 4 |
-| LSTM hidden size | 256 |
-| Turn step | 10° |
-| Strobe `k` (Agent B / C v2 low-freq) | 7 (≈5 Hz) |
-| Vision cost `c_vision` (Agent C v2) | 1 × 10⁻⁴ |
-| Entropy coef | 0.005 (C v2 gate curriculum: 0.02 → 0.001) |
-
-## Local development (macOS / Linux with uv)
-
-```bash
-# Install uv if needed: https://docs.astral.sh/uv/
-uv sync
-
-# Env smoke test
-uv run python -m cff_rl.envs.static_maze
-
-# Short training run
-uv run python scripts/train.py --config configs/agent_a_static.yaml --total-timesteps 10000
-```
-
-MiniWorld uses pyglet for rendering. On a headless machine it will pick up
-EGL/OSMesa automatically; no display server is required.
-
-## Training on Izar (SCITAS)
+## Setup on Izar (SCITAS)
 
 One-time setup on a login node:
 
@@ -116,17 +85,42 @@ cd CFF-InspiredFrameRateDegradationRL
 bash setup_env_izar.sh
 ```
 
+### Training
+
 Submit a training job:
 
 ```bash
-sbatch submit_job.sh "$WANDB_API_KEY"
+sbatch submit_job.sh configs/<config_file> "$WANDB_API_KEY"
 ```
+Please replace `<config_file>` with the config file of the agent you want to train (see the `Agent Configs` table for the config file name corresponding to each agent). `WANDB_API_KEY` is your personal wandb's access api key.
 
-Monitor:
+### Evaluation
+
+Submit an evaluation job:
 
 ```bash
-squeue -u "$USER"
-tail -f cff_agent_a_<jobid>.out
+sbatch submit_job_eval.sh <run_name> <env_id>
 ```
+Please replace `<run_name>` with the folder name which is created after training an agent (it contains the trained agent's checkpoints and config), and replace the `<env_id>` with the name of the env you want to test your agent in (MiniWorld-FourRooms-v0/ MiniWorld-FourRoomsHard-v0/ MiniWorld-FourRoomsHardDynamic-v0)
+
+The results (`eval_results.json`) will get saved in the same `<run_name>` folder.
+
+For example:
+```bash
+sbatch submit_job_eval.sh agent_a_fourroomshard_dynamic_4d_lstm_proprio_turn10__42__1780100225 MiniWorld-FourRoomsHardDynamic-v0
+```
+
+### Heatmap
+
+```bash
+sbatch submit_job_heatmap.sh <vc2e5ckpt> <vc1e4ckpt>
+```
+where `<vc2e5ckpt>` is the Agent C v2 checkpoint when trained with `agent_c2_fourroomshard_dynamic_4d_lstm_proprio_turn10_6M_gate_vc000002.yaml` file and `<vc1e4ckpt>` is the Agent C v2 checkpoint when trained with `agent_c2_fourroomshard_dynamic_4d_lstm_proprio_turn10_6M_gate_vc00001.yaml` file
+
+### Episode Video
+```bash
+sbatch submit_job_epvideo.sh <vc1e4ckpt>
+```
+where `<vc1e4ckpt>` is the Agent C v2 checkpoint when trained with `agent_c2_fourroomshard_dynamic_4d_lstm_proprio_turn10_6M_gate_vc00001.yaml` file
 
 For interactive debugging on a GPU node, see `scitas_tutorial.md`.
