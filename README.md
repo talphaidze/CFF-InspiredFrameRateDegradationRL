@@ -65,7 +65,7 @@ submit_job.sh / submit_job_*.sh   SLURM submission scripts
 |------------------------------|-------------|
 | Agent A                      | `agent_a_fourroomshard_v2_lstm_proprio_turn10_3M.yaml` |
 | Agent B                      | `agent_b_fourroomshard_v2_lstm_proprio_turn10.yaml` |
-| Agent C v2 (static trained)  | `agent_c2_fourroomshard_4d_lstm_proprio_turn10_6M_gate_vc000001.yaml` |
+| Agent C v2                   | `agent_c2_fourroomshard_4d_lstm_proprio_turn10_6M_gate_vc000001.yaml` |
 | Agent C v2 (dynamic trained) | `agent_c2_fourroomshard_dynamic_4d_lstm_proprio_turn10_6M_gate_vc000002.yaml` |
 
 ### Hard Dynamic
